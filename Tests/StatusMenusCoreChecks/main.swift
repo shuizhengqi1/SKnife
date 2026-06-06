@@ -31,7 +31,9 @@ enum StatusMenusCoreChecks {
         try run("byte formatting uses file units", byteFormattingUsesFileStyleUnits)
         try run("percent formatting handles zero total", percentFormattingHandlesZeroTotal)
         try run("storage summary skips recursive folder sizes", storageSummarySnapshotSkipsRecursiveFolderSizes)
+        try run("storage scan modes hide raw depth behind presets", storageScanModesHideRawDepthBehindPresets)
         try run("storage analysis builds ranked tree and cleanup candidates", storageAnalysisBuildsRankedTreeAndCleanupCandidates)
+        try run("Slock metric sample summarizes snapshot and caps history", slockMetricSampleSummarizesSnapshotAndCapsHistory)
         try run("storage placeholder skips disk capacity", storagePlaceholderSkipsDiskCapacity)
         try run("storage empty snapshot has no work", storageEmptySnapshotHasNoWork)
         print("StatusMenusCoreChecks passed")
@@ -343,6 +345,13 @@ enum StatusMenusCoreChecks {
         try expect(snapshot.folders.allSatisfy { $0.byteCount == nil }, "summary mode must not calculate folder sizes")
     }
 
+    private static func storageScanModesHideRawDepthBehindPresets() throws {
+        try expect(StorageScanMode.fast.maxDepth < StorageScanMode.balanced.maxDepth, "fast should scan less deeply than balanced")
+        try expect(StorageScanMode.balanced.maxDepth < StorageScanMode.deep.maxDepth, "balanced should scan less deeply than deep")
+        try expect(StorageScanMode.balanced.label == "Balanced", "balanced should be the user-facing default")
+        try expect(!StorageScanMode.balanced.subtitle.lowercased().contains("depth"), "preset subtitle should not expose raw depth")
+    }
+
     private static func storageAnalysisBuildsRankedTreeAndCleanupCandidates() throws {
         let root = try makeTemporaryDirectory()
         let derivedData = root.appendingPathComponent("Library/Developer/Xcode/DerivedData/project-a")
@@ -374,6 +383,40 @@ enum StatusMenusCoreChecks {
         try expect(analysis.cleanupCandidates.contains { $0.url.path.contains("Downloads") && $0.risk == .review }, "Downloads should require review")
         try expect(!analysis.cleanupCandidates.contains { $0.url.path.contains("Documents") }, "Documents should not be a cleanup candidate")
         try expect(analysis.scanLog.contains { $0.contains("Indexed 4 files") }, "scan log should include indexed file count")
+    }
+
+    private static func slockMetricSampleSummarizesSnapshotAndCapsHistory() throws {
+        let root = try makeTemporarySlockRoot()
+        let agent = root.appendingPathComponent("agents/agent-a")
+        let traces = root.appendingPathComponent("machines/machine-a/traces")
+        try FileManager.default.createDirectory(at: agent, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: traces, withIntermediateDirectories: true)
+        try writeBytes(4096, to: agent.appendingPathComponent("workspace.bin"))
+        try "trace\n".write(to: traces.appendingPathComponent("one.jsonl"), atomically: true, encoding: .utf8)
+        try "trace\n".write(to: traces.appendingPathComponent("two.jsonl"), atomically: true, encoding: .utf8)
+        let processOutput = """
+        PID ELAPSED %CPU %MEM COMMAND
+        42 00:10 1.5 0.4 /usr/local/bin/node /tmp/@slock-ai/daemon
+        43 00:12 2.5 0.6 /usr/local/bin/node /tmp/slock-worker
+        """
+
+        let snapshot = try SlockDiscoveryService().snapshot(rootURL: root, processOutput: processOutput)
+        let sample = SlockMetricSample(snapshot: snapshot, sampledAt: Date(timeIntervalSince1970: 10))
+
+        try expect(sample.agentCount == 1, "metric sample should count agents")
+        try expect(sample.machineCount == 1, "metric sample should count machines")
+        try expect(sample.processCount == 2, "metric sample should count processes")
+        try expect(sample.traceCount == 2, "metric sample should count traces")
+        try expect(sample.agentCPUPercent == 4.0, "metric sample should sum agent CPU")
+        try expect(sample.agentMemoryPercent == 1.0, "metric sample should sum agent memory")
+        try expect(sample.agentDiskBytes > 0, "metric sample should include agent disk usage")
+
+        let history = (0..<65).reduce(into: [SlockMetricSample]()) { values, index in
+            let next = SlockMetricSample(snapshot: snapshot, sampledAt: Date(timeIntervalSince1970: Double(index)))
+            values = SlockMetricSample.appending(next, to: values, limit: 60)
+        }
+        try expect(history.count == 60, "metric history should keep the last 60 samples")
+        try expect(history.first?.sampledAt == Date(timeIntervalSince1970: 5), "metric history should drop oldest samples")
     }
 
     private static func storagePlaceholderSkipsDiskCapacity() throws {

@@ -6,13 +6,14 @@ struct StorageView: View {
     @State private var analysis = StorageAnalysis.empty
     @State private var isScanning = false
     @State private var rootPath = FileManager.default.homeDirectoryForCurrentUser.path
-    @State private var scanDepth = 3
+    @State private var scanMode: StorageScanMode = .balanced
+    @State private var showAdvanced = false
+    @State private var customDepth = StorageScanMode.balanced.maxDepth
     @State private var selectedNode: StorageNode?
     @State private var selectedCandidateIDs: Set<String> = []
     @State private var cleanupMessage: String?
 
-    private let panelBackground = Color(red: 0.04, green: 0.07, blue: 0.13)
-    private let panelStroke = Color.white.opacity(0.13)
+    private let panelStroke = Color.secondary.opacity(0.18)
 
     var body: some View {
         ScrollView {
@@ -36,8 +37,13 @@ struct StorageView: View {
             HStack(spacing: 10) {
                 TextField("Scan path", text: $rootPath)
                     .textFieldStyle(.roundedBorder)
-                Stepper("Depth \(scanDepth)", value: $scanDepth, in: 1...8)
-                    .frame(width: 120)
+                Picker("Scan mode", selection: $scanMode) {
+                    ForEach(StorageScanMode.allCases) { mode in
+                        Text(mode.label).tag(mode)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .frame(width: 280)
                 Button {
                     scan()
                 } label: {
@@ -56,10 +62,21 @@ struct StorageView: View {
                 quickPathButton("Developer", FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Developer"))
                 quickPathButton("Slock", SlockDiscoveryService.defaultRootURL)
                 Spacer()
-                Text(analysis.scanLog.last ?? "Ready")
-                    .font(.caption.monospaced())
+                Text(isScanning ? "Scanning \(scanMode.label.lowercased()) profile" : scanMode.subtitle)
+                    .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
+            }
+
+            DisclosureGroup(isExpanded: $showAdvanced) {
+                Stepper("Custom scan reach \(customDepth)", value: $customDepth, in: 1...8)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .padding(.top, 4)
+            } label: {
+                Text("Advanced")
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.secondary)
             }
         }
     }
@@ -94,7 +111,7 @@ struct StorageView: View {
             }
         }
         .padding(14)
-        .background(panelBackground, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: 12, style: .continuous)
                 .stroke(panelStroke)
@@ -107,15 +124,15 @@ struct StorageView: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Treemap / Size Topology")
                         .font(.headline)
-                        .foregroundStyle(.white)
-                    Text("Click a block to inspect the path. Scan deeper for a fuller tree.")
+                        .foregroundStyle(.primary)
+                    Text("Click a block to inspect the path. Use Deep scan for a fuller tree.")
                         .font(.caption)
-                        .foregroundStyle(.white.opacity(0.58))
+                        .foregroundStyle(.secondary)
                 }
                 Spacer()
                 Text(rootDisplayPath)
                     .font(.caption.monospaced())
-                    .foregroundStyle(.white.opacity(0.52))
+                    .foregroundStyle(.secondary)
                     .lineLimit(1)
                     .truncationMode(.middle)
             }
@@ -131,7 +148,7 @@ struct StorageView: View {
             selectedNodeDetails
         }
         .padding(14)
-        .background(.white.opacity(0.045), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: 10, style: .continuous)
                 .stroke(panelStroke)
@@ -140,12 +157,20 @@ struct StorageView: View {
 
     private var scanMatrix: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Scan Matrix")
+            Text("Largest Folders")
                 .font(.caption.weight(.bold))
                 .textCase(.uppercase)
-                .foregroundStyle(.white.opacity(0.58))
+                .foregroundStyle(.secondary)
 
             VStack(spacing: 8) {
+                if analysis.root.children.isEmpty {
+                    Text("Run a scan to see the largest folders in this location.")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.vertical, 8)
+                }
+
                 ForEach(Array(analysis.root.children.prefix(8))) { node in
                     Button {
                         selectedNode = node
@@ -153,7 +178,7 @@ struct StorageView: View {
                         HStack {
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(node.title)
-                                    .foregroundStyle(.white)
+                                    .foregroundStyle(.primary)
                                     .lineLimit(1)
                                 Text(node.risk.rawValue)
                                     .font(.caption2.monospaced())
@@ -162,7 +187,7 @@ struct StorageView: View {
                             Spacer()
                             Text(StatusFormatters.bytes(node.byteCount))
                                 .font(.caption.monospacedDigit())
-                                .foregroundStyle(.white.opacity(0.72))
+                                .foregroundStyle(.secondary)
                         }
                         .padding(9)
                         .background(color(for: node.risk).opacity(0.14), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
@@ -176,26 +201,25 @@ struct StorageView: View {
             }
 
             Divider()
-                .overlay(.white.opacity(0.12))
 
             VStack(alignment: .leading, spacing: 6) {
                 ForEach(analysis.scanLog, id: \.self) { line in
                     Text(line)
-                        .font(.caption.monospaced())
-                        .foregroundStyle(.green.opacity(0.9))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                         .lineLimit(1)
                 }
                 if analysis.scanLog.isEmpty {
-                    Text("agentdock storage scan --path \(rootDisplayPath) --depth \(scanDepth)")
-                        .font(.caption.monospaced())
-                        .foregroundStyle(.green.opacity(0.9))
+                    Text("Ready to analyze \(rootDisplayPath).")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                         .lineLimit(2)
                 }
             }
             Spacer(minLength: 0)
         }
         .padding(12)
-        .background(.white.opacity(0.045), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: 10, style: .continuous)
                 .stroke(panelStroke)
@@ -210,12 +234,12 @@ struct StorageView: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(selectedNode.url.path)
                         .font(.caption.monospaced())
-                        .foregroundStyle(.white.opacity(0.82))
+                        .foregroundStyle(.primary)
                         .lineLimit(1)
                         .truncationMode(.middle)
                     Text("\(StatusFormatters.bytes(selectedNode.byteCount)) · \(selectedNode.risk.rawValue)")
                         .font(.caption)
-                        .foregroundStyle(.white.opacity(0.56))
+                        .foregroundStyle(.secondary)
                 }
                 Spacer()
                 Button("Reveal") {
@@ -224,12 +248,12 @@ struct StorageView: View {
             } else {
                 Text("No block selected")
                     .font(.caption)
-                    .foregroundStyle(.white.opacity(0.56))
+                    .foregroundStyle(.secondary)
                 Spacer()
             }
         }
         .padding(10)
-        .background(.black.opacity(0.18), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
     }
 
     private var cleanupReview: some View {
@@ -237,7 +261,7 @@ struct StorageView: View {
             Text("Cleanup Review")
                 .font(.caption.weight(.bold))
                 .textCase(.uppercase)
-                .foregroundStyle(.white.opacity(0.58))
+                .foregroundStyle(.secondary)
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(StatusFormatters.bytes(selectedCleanupBytes))
@@ -245,13 +269,13 @@ struct StorageView: View {
                     .foregroundStyle(.green)
                 Text("selected reclaim preview")
                     .font(.caption)
-                    .foregroundStyle(.white.opacity(0.56))
+                    .foregroundStyle(.secondary)
             }
 
             if analysis.cleanupCandidates.isEmpty {
                 Text("No cleanup candidates found for this scan.")
                     .font(.callout)
-                    .foregroundStyle(.white.opacity(0.58))
+                    .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             } else {
                 VStack(spacing: 8) {
@@ -259,14 +283,14 @@ struct StorageView: View {
                         Toggle(isOn: candidateBinding(candidate)) {
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(candidate.title)
-                                    .foregroundStyle(.white)
+                                    .foregroundStyle(.primary)
                                     .lineLimit(1)
                                 Text("\(candidate.risk.rawValue) · \(StatusFormatters.bytes(candidate.byteCount))")
                                     .font(.caption2.monospaced())
                                     .foregroundStyle(color(for: candidate.risk))
                                 Text(candidate.reason)
                                     .font(.caption2)
-                                    .foregroundStyle(.white.opacity(0.5))
+                                    .foregroundStyle(.secondary)
                                     .lineLimit(2)
                             }
                         }
@@ -278,7 +302,7 @@ struct StorageView: View {
             if let cleanupMessage {
                 Text(cleanupMessage)
                     .font(.caption)
-                    .foregroundStyle(.white.opacity(0.72))
+                    .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
 
@@ -307,7 +331,7 @@ struct StorageView: View {
             .disabled(selectedCandidateIDs.isEmpty)
         }
         .padding(12)
-        .background(.white.opacity(0.045), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: 10, style: .continuous)
                 .stroke(panelStroke)
@@ -374,6 +398,10 @@ struct StorageView: View {
         selectedCleanupCandidates.reduce(0) { $0 + $1.byteCount }
     }
 
+    private var effectiveScanDepth: Int {
+        showAdvanced ? customDepth : scanMode.maxDepth
+    }
+
     private func technicalMetric(_ title: String, _ value: String, symbolName: String, color: Color) -> some View {
         HStack(spacing: 10) {
             SymbolIcon(symbolName: symbolName, size: 20)
@@ -381,10 +409,10 @@ struct StorageView: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(title)
                     .font(.caption)
-                    .foregroundStyle(.white.opacity(0.56))
+                    .foregroundStyle(.secondary)
                 Text(value)
                     .font(.headline.monospacedDigit())
-                    .foregroundStyle(.white)
+                    .foregroundStyle(.primary)
                     .lineLimit(1)
                     .minimumScaleFactor(0.72)
             }
@@ -392,7 +420,7 @@ struct StorageView: View {
         }
         .padding(12)
         .frame(maxWidth: .infinity)
-        .background(.white.opacity(0.045), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .background(color.opacity(0.08), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: 10, style: .continuous)
                 .stroke(color.opacity(0.24))
@@ -429,7 +457,7 @@ struct StorageView: View {
             cleanupMessage = nil
         }
         let url = URL(fileURLWithPath: NSString(string: rootPath).expandingTildeInPath)
-        let depth = scanDepth
+        let depth = effectiveScanDepth
         Task {
             let nextAnalysis = await Task.detached(priority: .utility) {
                 StorageService().analysis(rootURL: url, maxDepth: depth, includeHidden: false, includeDiskCapacity: true)
@@ -490,9 +518,9 @@ private struct StorageTreemapView: View {
             ZStack(alignment: .topLeading) {
                 if tiles.isEmpty {
                     RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .fill(.black.opacity(0.18))
+                        .fill(Color.secondary.opacity(0.08))
                     Text("No scan data")
-                        .foregroundStyle(.white.opacity(0.56))
+                        .foregroundStyle(.secondary)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
                     ForEach(tiles) { tile in

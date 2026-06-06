@@ -14,6 +14,47 @@ public struct DiskSnapshot: Equatable {
     }
 }
 
+public enum StorageScanMode: String, CaseIterable, Identifiable {
+    case fast
+    case balanced
+    case deep
+
+    public var id: String { rawValue }
+
+    public var label: String {
+        switch self {
+        case .fast:
+            return "Fast"
+        case .balanced:
+            return "Balanced"
+        case .deep:
+            return "Deep"
+        }
+    }
+
+    public var subtitle: String {
+        switch self {
+        case .fast:
+            return "Quick overview"
+        case .balanced:
+            return "Useful detail"
+        case .deep:
+            return "Fuller analysis"
+        }
+    }
+
+    public var maxDepth: Int {
+        switch self {
+        case .fast:
+            return 2
+        case .balanced:
+            return 4
+        case .deep:
+            return 7
+        }
+    }
+}
+
 public struct FolderUsage: Identifiable, Equatable {
     public var id: String { url.path }
     public let title: String

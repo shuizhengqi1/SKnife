@@ -10,6 +10,7 @@ struct SlockAgentsView: View {
     @State private var editingAgent: EditableSlockAgent?
     @State private var saveErrorMessage: String?
     @State private var isSavingMemory = false
+    @State private var metricHistory: [SlockMetricSample] = []
 
     var body: some View {
         ScrollView {
@@ -53,6 +54,7 @@ struct SlockAgentsView: View {
                             .fixedSize(horizontal: false, vertical: true)
                     }
 
+                    metricHistorySection
                     agentSection(snapshot.agents)
                     machineSection(snapshot.machines)
                     processSection(snapshot.processes)
@@ -295,6 +297,7 @@ struct SlockAgentsView: View {
 
     @MainActor
     private func refreshLoop() async {
+        metricHistory.removeAll()
         while !Task.isCancelled {
             await refreshNow()
 
@@ -319,6 +322,11 @@ struct SlockAgentsView: View {
                 try SlockDiscoveryService().liveSnapshot(rootURL: root)
             }.value
             snapshot = nextSnapshot
+            metricHistory = SlockMetricSample.appending(
+                SlockMetricSample(snapshot: nextSnapshot),
+                to: metricHistory,
+                limit: 60
+            )
             errorMessage = nil
         } catch {
             snapshot = nil
@@ -334,6 +342,172 @@ struct SlockAgentsView: View {
     private func copy(_ value: String) {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(value, forType: .string)
+    }
+
+    private var metricHistorySection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("Metric history")
+                    .font(.headline)
+                Spacer()
+                Text("\(metricHistory.count) samples · refresh \(Int(moduleStore.effectiveRefreshInterval))s")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 190), spacing: 12)], spacing: 12) {
+                slockMetricCard(
+                    title: "Agents",
+                    value: latest.map { "\($0.agentCount)" } ?? "-",
+                    subtitle: "workspace count",
+                    values: metricHistory.map { Double($0.agentCount) },
+                    color: .blue,
+                    symbolName: "folder"
+                )
+                slockMetricCard(
+                    title: "Processes",
+                    value: latest.map { "\($0.processCount)" } ?? "-",
+                    subtitle: "Slock-related",
+                    values: metricHistory.map { Double($0.processCount) },
+                    color: .purple,
+                    symbolName: "cpu"
+                )
+                slockMetricCard(
+                    title: "Agent CPU",
+                    value: latest.map { String(format: "%.1f%%", $0.agentCPUPercent) } ?? "-",
+                    subtitle: "combined process CPU",
+                    values: metricHistory.map(\.agentCPUPercent),
+                    color: .orange,
+                    symbolName: "speedometer"
+                )
+                slockMetricCard(
+                    title: "Agent MEM",
+                    value: latest.map { String(format: "%.1f%%", $0.agentMemoryPercent) } ?? "-",
+                    subtitle: "combined process memory",
+                    values: metricHistory.map(\.agentMemoryPercent),
+                    color: .green,
+                    symbolName: "memorychip"
+                )
+                slockMetricCard(
+                    title: "Agent Disk",
+                    value: latest.map { StatusFormatters.bytes($0.agentDiskBytes) } ?? "-",
+                    subtitle: "workspace storage",
+                    values: metricHistory.map { Double($0.agentDiskBytes) },
+                    color: .cyan,
+                    symbolName: "internaldrive"
+                )
+                slockMetricCard(
+                    title: "Machines",
+                    value: latest.map { "\($0.machineCount)" } ?? "-",
+                    subtitle: "machine records",
+                    values: metricHistory.map { Double($0.machineCount) },
+                    color: .indigo,
+                    symbolName: "desktopcomputer"
+                )
+                slockMetricCard(
+                    title: "Traces",
+                    value: latest.map { "\($0.traceCount)" } ?? "-",
+                    subtitle: "trace files",
+                    values: metricHistory.map { Double($0.traceCount) },
+                    color: .pink,
+                    symbolName: "waveform.path.ecg"
+                )
+            }
+        }
+    }
+
+    private var latest: SlockMetricSample? {
+        metricHistory.last
+    }
+
+    private func slockMetricCard(
+        title: String,
+        value: String,
+        subtitle: String,
+        values: [Double],
+        color: Color,
+        symbolName: String
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                SymbolIcon(symbolName: symbolName, size: 16)
+                    .foregroundStyle(color)
+                Text(title)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer()
+            }
+
+            Text(value)
+                .font(.title3.weight(.semibold).monospacedDigit())
+                .lineLimit(1)
+                .minimumScaleFactor(0.72)
+
+            SlockSparklineView(values: values, color: color)
+                .frame(height: 42)
+
+            Text(subtitle)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+        }
+        .padding(12)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .stroke(color.opacity(0.22))
+        )
+    }
+}
+
+private struct SlockSparklineView: View {
+    let values: [Double]
+    let color: Color
+
+    var body: some View {
+        GeometryReader { proxy in
+            ZStack {
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .fill(color.opacity(0.08))
+
+                Path { path in
+                    let points = normalizedPoints(in: proxy.size)
+                    guard let first = points.first else {
+                        return
+                    }
+                    path.move(to: first)
+                    for point in points.dropFirst() {
+                        path.addLine(to: point)
+                    }
+                }
+                .stroke(color, style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
+
+                if values.count < 2 {
+                    Text("waiting")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .accessibilityLabel("Metric sparkline")
+    }
+
+    private func normalizedPoints(in size: CGSize) -> [CGPoint] {
+        guard !values.isEmpty, size.width > 0, size.height > 0 else {
+            return []
+        }
+
+        let minValue = values.min() ?? 0
+        let maxValue = values.max() ?? 0
+        let range = max(1, maxValue - minValue)
+        let xStep = values.count > 1 ? size.width / CGFloat(values.count - 1) : 0
+
+        return values.enumerated().map { index, value in
+            let x = CGFloat(index) * xStep
+            let normalized = (value - minValue) / range
+            let y = size.height - CGFloat(normalized) * size.height
+            return CGPoint(x: x, y: y)
+        }
     }
 }
 
