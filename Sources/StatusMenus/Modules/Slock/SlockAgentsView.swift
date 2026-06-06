@@ -7,6 +7,9 @@ struct SlockAgentsView: View {
     @State private var snapshot: SlockSnapshot?
     @State private var errorMessage: String?
     @State private var isRefreshing = false
+    @State private var editingAgent: EditableSlockAgent?
+    @State private var saveErrorMessage: String?
+    @State private var isSavingMemory = false
 
     var body: some View {
         ScrollView {
@@ -43,6 +46,13 @@ struct SlockAgentsView: View {
                         MetricTile(title: "Processes", value: "\(snapshot.processes.count)", subtitle: "Command redacted", symbolName: "cpu")
                     }
 
+                    if let errorMessage {
+                        Text(errorMessage)
+                            .font(.callout)
+                            .foregroundStyle(.red)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+
                     agentSection(snapshot.agents)
                     machineSection(snapshot.machines)
                     processSection(snapshot.processes)
@@ -67,6 +77,20 @@ struct SlockAgentsView: View {
         }
         .task(id: refreshLoopID) {
             await refreshLoop()
+        }
+        .sheet(item: $editingAgent) { draft in
+            SlockMemoryEditorSheet(
+                initialDraft: draft,
+                saveErrorMessage: $saveErrorMessage,
+                isSaving: isSavingMemory,
+                onCancel: {
+                    saveErrorMessage = nil
+                    editingAgent = nil
+                },
+                onSave: { draft in
+                    saveMemoryDraft(draft)
+                }
+            )
         }
     }
 
@@ -111,6 +135,14 @@ struct SlockAgentsView: View {
                             Spacer()
                             Text(StatusFormatters.bytes(agent.byteCount))
                                 .font(.body.monospacedDigit())
+                            Button {
+                                saveErrorMessage = nil
+                                editingAgent = EditableSlockAgent(agent: agent)
+                            } label: {
+                                SymbolIcon(symbolName: "pencil", size: 14)
+                            }
+                            .buttonStyle(.borderless)
+                            .help("Edit MEMORY.md")
                             Button {
                                 NSWorkspace.shared.open(agent.url)
                             } label: {
@@ -227,6 +259,40 @@ struct SlockAgentsView: View {
         }
     }
 
+    private func saveMemoryDraft(_ draft: EditableSlockAgent) {
+        Task {
+            await saveMemoryDraftOnMain(draft)
+        }
+    }
+
+    @MainActor
+    private func saveMemoryDraftOnMain(_ draft: EditableSlockAgent) async {
+        guard !isSavingMemory else {
+            return
+        }
+
+        isSavingMemory = true
+        saveErrorMessage = nil
+        defer {
+            isSavingMemory = false
+        }
+
+        let agentURL = draft.url
+        let memoryDraft = draft.memoryDraft
+        do {
+            try await Task.detached(priority: .utility) {
+                try SlockDiscoveryService().saveMemoryDraft(agentURL: agentURL, draft: memoryDraft)
+            }.value
+            editingAgent = nil
+            errorMessage = nil
+            await refreshNow()
+        } catch {
+            let message = "Could not save MEMORY.md: \(error.localizedDescription)"
+            saveErrorMessage = message
+            errorMessage = message
+        }
+    }
+
     @MainActor
     private func refreshLoop() async {
         while !Task.isCancelled {
@@ -268,6 +334,194 @@ struct SlockAgentsView: View {
     private func copy(_ value: String) {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(value, forType: .string)
+    }
+}
+
+private struct EditableSlockAgent: Identifiable, Equatable {
+    let id: String
+    let url: URL
+    var displayName: String
+    var description: String
+    var memorySections: [EditableMemorySection]
+
+    init(agent: SlockAgentWorkspace) {
+        id = agent.url.path
+        url = agent.url
+        displayName = agent.displayName
+        description = agent.description ?? ""
+        memorySections = agent.memorySections.map {
+            EditableMemorySection(title: $0.title, body: $0.body)
+        }
+    }
+
+    var memoryFileURL: URL {
+        url.appendingPathComponent("MEMORY.md")
+    }
+
+    var memoryDraft: SlockAgentMemoryDraft {
+        SlockAgentMemoryDraft(
+            displayName: displayName,
+            description: description,
+            memorySections: memorySections.map {
+                SlockAgentMemorySection(title: $0.title, body: $0.body)
+            }
+        )
+    }
+}
+
+private struct EditableMemorySection: Identifiable, Equatable {
+    let id: UUID
+    var title: String
+    var body: String
+
+    init(id: UUID = UUID(), title: String = "", body: String = "") {
+        self.id = id
+        self.title = title
+        self.body = body
+    }
+}
+
+private struct SlockMemoryEditorSheet: View {
+    @State private var draft: EditableSlockAgent
+    @Binding var saveErrorMessage: String?
+
+    let isSaving: Bool
+    let onCancel: () -> Void
+    let onSave: (EditableSlockAgent) -> Void
+
+    init(
+        initialDraft: EditableSlockAgent,
+        saveErrorMessage: Binding<String?>,
+        isSaving: Bool,
+        onCancel: @escaping () -> Void,
+        onSave: @escaping (EditableSlockAgent) -> Void
+    ) {
+        _draft = State(initialValue: initialDraft)
+        _saveErrorMessage = saveErrorMessage
+        self.isSaving = isSaving
+        self.onCancel = onCancel
+        self.onSave = onSave
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Edit MEMORY.md")
+                    .font(.title2.weight(.semibold))
+                Text(draft.memoryFileURL.path)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .textSelection(.enabled)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 20)
+            .padding(.top, 20)
+
+            Form {
+                Section("Profile") {
+                    TextField("Name", text: $draft.displayName)
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("Description")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        TextEditor(text: $draft.description)
+                            .font(.body)
+                            .frame(minHeight: 76)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                    .stroke(.quaternary)
+                            )
+                    }
+                }
+
+                Section("Memory Sections") {
+                    if draft.memorySections.isEmpty {
+                        Text("No memory sections.")
+                            .foregroundStyle(.secondary)
+                    }
+
+                    ForEach($draft.memorySections) { section in
+                        VStack(alignment: .leading, spacing: 8) {
+                            HStack {
+                                TextField("Section title", text: section.title)
+                                Button {
+                                    removeSection(section.wrappedValue.id)
+                                } label: {
+                                    SymbolIcon(symbolName: "trash", size: 14)
+                                }
+                                .buttonStyle(.borderless)
+                                .help("Remove section")
+                            }
+
+                            TextEditor(text: section.body)
+                                .font(.body)
+                                .frame(minHeight: 92)
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                        .stroke(.quaternary)
+                                )
+                        }
+                        .padding(.vertical, 4)
+                    }
+
+                    Button {
+                        addSection()
+                    } label: {
+                        HStack(spacing: 6) {
+                            SymbolIcon(symbolName: "plus", size: 14)
+                            Text("Add Section")
+                        }
+                    }
+                }
+            }
+            .formStyle(.grouped)
+            .padding(.horizontal, 20)
+            .padding(.vertical, 12)
+
+            if let saveErrorMessage {
+                Text(saveErrorMessage)
+                    .font(.callout)
+                    .foregroundStyle(.red)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 20)
+                    .padding(.bottom, 12)
+            }
+
+            Divider()
+            HStack {
+                Button {
+                    NSWorkspace.shared.open(draft.url)
+                } label: {
+                    HStack(spacing: 6) {
+                        SymbolIcon(symbolName: "folder", size: 14)
+                        Text("Open Folder")
+                    }
+                }
+                Spacer()
+                Button("Cancel", role: .cancel) {
+                    onCancel()
+                }
+                Button(isSaving ? "Saving" : "Save") {
+                    onSave(draft)
+                }
+                .keyboardShortcut(.defaultAction)
+                .disabled(isSaving)
+            }
+            .padding(20)
+        }
+        .frame(width: 620)
+        .frame(minHeight: 580)
+    }
+
+    private func addSection() {
+        draft.memorySections.append(EditableMemorySection(title: "New Section"))
+    }
+
+    private func removeSection(_ id: UUID) {
+        draft.memorySections.removeAll { $0.id == id }
     }
 }
 

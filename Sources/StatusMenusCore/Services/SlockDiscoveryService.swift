@@ -15,6 +15,23 @@ public struct SlockAgentMemorySection: Identifiable, Equatable {
     public var id: String { title }
     public let title: String
     public let body: String
+
+    public init(title: String, body: String) {
+        self.title = title
+        self.body = body
+    }
+}
+
+public struct SlockAgentMemoryDraft: Equatable {
+    public var displayName: String
+    public var description: String
+    public var memorySections: [SlockAgentMemorySection]
+
+    public init(displayName: String, description: String, memorySections: [SlockAgentMemorySection]) {
+        self.displayName = displayName
+        self.description = description
+        self.memorySections = memorySections
+    }
 }
 
 public struct SlockMachine: Identifiable, Equatable {
@@ -82,6 +99,57 @@ public struct SlockDiscoveryService {
             processes: processes,
             status: status
         )
+    }
+
+    public func saveMemoryDraft(agentURL: URL, draft: SlockAgentMemoryDraft) throws {
+        let resolvedAgentURL = normalizedURL(agentURL)
+        try fileManager.createDirectory(at: resolvedAgentURL, withIntermediateDirectories: true)
+        let memoryURL = resolvedAgentURL.appendingPathComponent("MEMORY.md")
+        let markdown = renderedMemoryMarkdown(from: draft, fallbackDisplayName: resolvedAgentURL.lastPathComponent)
+        try markdown.write(to: memoryURL, atomically: true, encoding: .utf8)
+    }
+
+    private func renderedMemoryMarkdown(from draft: SlockAgentMemoryDraft, fallbackDisplayName: String) -> String {
+        let displayName = singleLineMarkdownText(draft.displayName)
+        let description = markdownBody(draft.description)
+        let sections = draft.memorySections.compactMap { section -> SlockAgentMemorySection? in
+            let title = singleLineMarkdownText(section.title)
+            let body = markdownBody(section.body)
+            guard !title.isEmpty, !body.isEmpty else {
+                return nil
+            }
+            return SlockAgentMemorySection(title: title, body: body)
+        }
+
+        var parts = ["# \(displayName.isEmpty ? fallbackDisplayName : displayName)"]
+        if !description.isEmpty {
+            parts.append("## Role\n\(description)")
+        }
+        parts.append(contentsOf: sections.map { "## \($0.title)\n\($0.body)" })
+        return parts.joined(separator: "\n\n") + "\n"
+    }
+
+    private func singleLineMarkdownText(_ value: String) -> String {
+        value
+            .replacingOccurrences(of: "\r\n", with: "\n")
+            .replacingOccurrences(of: "\r", with: "\n")
+            .components(separatedBy: .newlines)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+    }
+
+    private func markdownBody(_ value: String) -> String {
+        value
+            .replacingOccurrences(of: "\r\n", with: "\n")
+            .replacingOccurrences(of: "\r", with: "\n")
+            .components(separatedBy: .newlines)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .drop(while: { $0.isEmpty })
+            .reversed()
+            .drop(while: { $0.isEmpty })
+            .reversed()
+            .joined(separator: "\n")
     }
 
     private func resolveRootURL(from preferredRootURL: URL) -> URL {

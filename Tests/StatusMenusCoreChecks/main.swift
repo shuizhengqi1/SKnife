@@ -20,6 +20,7 @@ enum StatusMenusCoreChecks {
         try await run("module store defaults refresh interval", moduleStoreDefaultsRefreshInterval)
         try run("Slock discovery scans all directories", discoveryScansAllAgentAndMachineDirectoriesWithoutFixedIDs)
         try run("Slock discovery reads agent profile metadata", discoveryReadsAgentProfileMetadata)
+        try run("Slock discovery writes agent memory draft", discoveryWritesAgentMemoryDraft)
         try run("Slock discovery resolves nested paths", discoveryResolvesNestedSlockPaths)
         try run("Slock discovery reports inactive", discoveryReportsInactiveWhenNoSlockStateExists)
         try run("Slock discovery detects current home when present", discoveryDetectsCurrentHomeWhenPresent)
@@ -176,6 +177,40 @@ enum StatusMenusCoreChecks {
         try expect(profile.description == "General Slock AI agent available for coding, research, and debugging.", "description should come from Role section")
         try expect(profile.memorySections.map(\.title) == ["Key Knowledge", "Active Context"], "memory sections should be extracted")
         try expect(profile.memorySections.first?.body.contains("SKnife app structure") == true, "memory section body should be preserved")
+    }
+
+    private static func discoveryWritesAgentMemoryDraft() throws {
+        let root = try makeTemporarySlockRoot()
+        let agent = root.appendingPathComponent("agents/agent-a")
+        try FileManager.default.createDirectory(at: agent, withIntermediateDirectories: true)
+        try """
+        # oldAgent
+
+        ## Role
+        Old local description.
+        """.write(to: agent.appendingPathComponent("MEMORY.md"), atomically: true, encoding: .utf8)
+
+        let draft = SlockAgentMemoryDraft(
+            displayName: "editedAgent",
+            description: "Updated local description.",
+            memorySections: [
+                SlockAgentMemorySection(title: "Working Notes", body: "- Keep edits local.\n- Refresh after save."),
+                SlockAgentMemorySection(title: "Preferences", body: "Use SwiftUI.")
+            ]
+        )
+
+        try SlockDiscoveryService().saveMemoryDraft(agentURL: agent, draft: draft)
+
+        let text = try String(contentsOf: agent.appendingPathComponent("MEMORY.md"), encoding: .utf8)
+        try expect(text.contains("# editedAgent"), "saved memory should include display name")
+        try expect(text.contains("## Role\nUpdated local description."), "saved memory should include description")
+        try expect(text.contains("## Working Notes\n- Keep edits local."), "saved memory should include custom sections")
+
+        let snapshot = try SlockDiscoveryService().snapshot(rootURL: root, processOutput: "")
+        let profile = try expectUnwrapped(snapshot.agents.first, "agent should still be discovered")
+        try expect(profile.displayName == "editedAgent", "edited display name should be read back")
+        try expect(profile.description == "Updated local description.", "edited description should be read back")
+        try expect(profile.memorySections.map(\.title) == ["Working Notes", "Preferences"], "edited memory sections should be read back")
     }
 
     private static func discoveryReportsInactiveWhenNoSlockStateExists() throws {
