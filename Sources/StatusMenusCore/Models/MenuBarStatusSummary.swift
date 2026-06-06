@@ -7,6 +7,7 @@ public struct MenuBarStatusSummary: Equatable {
     public init(slock: SlockSnapshot?, usage: UsageSnapshot?) {
         let status = slock?.status ?? .unavailable
         let agentCount = slock?.agents.count ?? 0
+        let agentNames = slock?.agents.map(\.displayName).filter { !$0.isEmpty } ?? []
         let machineCount = slock?.machines.count ?? 0
         let slockProcessCount = slock?.processes.count ?? 0
         let agentCPU = slock?.processes.reduce(0) { $0 + $1.cpuPercent } ?? 0
@@ -24,6 +25,10 @@ public struct MenuBarStatusSummary: Equatable {
             "Agent CPU: \(Self.percent(agentCPU))",
             "Agent MEM: \(Self.percent(agentMemory))"
         ]
+
+        if !agentNames.isEmpty {
+            lines.insert("Agent names: \(agentNames.joined(separator: ", "))", at: 2)
+        }
 
         if let topCPU = usage?.topCPUProcesses.first {
             lines.append("Top CPU: \(Self.processName(topCPU.displayName)) \(Self.percent(topCPU.cpuPercent))")

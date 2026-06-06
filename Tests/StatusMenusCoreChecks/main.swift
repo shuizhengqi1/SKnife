@@ -19,6 +19,7 @@ enum StatusMenusCoreChecks {
         try await run("module store persists disabled modules", moduleStorePersistsDisabledModulesAndKeepsManagerEnabled)
         try await run("module store defaults refresh interval", moduleStoreDefaultsRefreshInterval)
         try run("Slock discovery scans all directories", discoveryScansAllAgentAndMachineDirectoriesWithoutFixedIDs)
+        try run("Slock discovery reads agent profile metadata", discoveryReadsAgentProfileMetadata)
         try run("Slock discovery resolves nested paths", discoveryResolvesNestedSlockPaths)
         try run("Slock discovery reports inactive", discoveryReportsInactiveWhenNoSlockStateExists)
         try run("Slock discovery detects current home when present", discoveryDetectsCurrentHomeWhenPresent)
@@ -58,6 +59,13 @@ enum StatusMenusCoreChecks {
         if !condition() {
             throw CheckFailure.failed(message)
         }
+    }
+
+    private static func expectUnwrapped<T>(_ value: T?, _ message: String) throws -> T {
+        guard let value else {
+            throw CheckFailure.failed(message)
+        }
+        return value
     }
 
     private static func registryContainsRequiredBuiltInsInStableOrder() throws {
@@ -137,6 +145,39 @@ enum StatusMenusCoreChecks {
         try expect(snapshot.status == .healthy, "snapshot should be healthy")
     }
 
+    private static func discoveryReadsAgentProfileMetadata() throws {
+        let root = try makeTemporarySlockRoot()
+        let agent = root.appendingPathComponent("agents/agent-a")
+        try FileManager.default.createDirectory(at: agent.appendingPathComponent(".slock"), withIntermediateDirectories: true)
+        try """
+        # testAgent
+
+        ## Role
+        General Slock AI agent available for coding, research, and debugging.
+
+        ## Key Knowledge
+        - Knows the SKnife app structure.
+        - Tracks local Slock workspaces.
+
+        ## Active Context
+        - Working in the StatusMenus repo.
+        """.write(to: agent.appendingPathComponent("MEMORY.md"), atomically: true, encoding: .utf8)
+        try """
+        {
+          "avatar_url": "https://cdn.example.test/testAgent.png"
+        }
+        """.write(to: agent.appendingPathComponent(".slock/profile.json"), atomically: true, encoding: .utf8)
+
+        let snapshot = try SlockDiscoveryService().snapshot(rootURL: root, processOutput: "")
+        let profile = try expectUnwrapped(snapshot.agents.first, "agent should be discovered")
+
+        try expect(profile.displayName == "testAgent", "display name should come from MEMORY.md")
+        try expect(profile.avatarURL?.absoluteString == "https://cdn.example.test/testAgent.png", "avatar URL should come from local metadata")
+        try expect(profile.description == "General Slock AI agent available for coding, research, and debugging.", "description should come from Role section")
+        try expect(profile.memorySections.map(\.title) == ["Key Knowledge", "Active Context"], "memory sections should be extracted")
+        try expect(profile.memorySections.first?.body.contains("SKnife app structure") == true, "memory section body should be preserved")
+    }
+
     private static func discoveryReportsInactiveWhenNoSlockStateExists() throws {
         let root = try makeTemporaryDirectory()
 
@@ -198,6 +239,7 @@ enum StatusMenusCoreChecks {
 
         try expect(summary.buttonTitle == "SKnife 2A", "button title should include compact agent count")
         try expect(summary.menuLines.contains("Agents: 2"), "menu should include agent count")
+        try expect(summary.menuLines.contains("Agent names: agent-a, agent-b"), "menu should include agent display names")
         try expect(summary.menuLines.contains("Agent CPU: 1.5%"), "menu should include Slock agent CPU")
         try expect(summary.menuLines.contains("Agent MEM: 0.4%"), "menu should include Slock agent memory")
         try expect(summary.menuLines.contains("Top CPU: heavy 9.0%"), "menu should include top CPU process")

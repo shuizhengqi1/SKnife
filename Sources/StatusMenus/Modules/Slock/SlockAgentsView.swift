@@ -87,35 +87,68 @@ struct SlockAgentsView: View {
                 )
             } else {
                 ForEach(agents) { agent in
-                    HStack(spacing: 12) {
-                        SymbolIcon(symbolName: "folder", size: 16)
-                            .foregroundStyle(.secondary)
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(agent.id)
-                                .font(.body.monospaced())
-                            Text(agent.url.path)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                                .lineLimit(1)
-                                .truncationMode(.middle)
+                    VStack(alignment: .leading, spacing: 10) {
+                        HStack(alignment: .top, spacing: 12) {
+                            AgentAvatarView(agent: agent)
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(agent.displayName)
+                                    .font(.headline)
+                                Text(agent.id)
+                                    .font(.caption.monospaced())
+                                    .foregroundStyle(.secondary)
+                                if let description = agent.description {
+                                    Text(description)
+                                        .font(.callout)
+                                        .foregroundStyle(.secondary)
+                                        .lineLimit(2)
+                                }
+                                Text(agent.url.path)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                                    .truncationMode(.middle)
+                            }
+                            Spacer()
+                            Text(StatusFormatters.bytes(agent.byteCount))
+                                .font(.body.monospacedDigit())
+                            Button {
+                                NSWorkspace.shared.open(agent.url)
+                            } label: {
+                                SymbolIcon(symbolName: "arrow.up.right.square", size: 14)
+                            }
+                            .buttonStyle(.borderless)
+                            .help("Open workspace")
+                            Button {
+                                copy(agent.url.path)
+                            } label: {
+                                SymbolIcon(symbolName: "doc.on.doc", size: 14)
+                            }
+                            .buttonStyle(.borderless)
+                            .help("Copy path")
                         }
-                        Spacer()
-                        Text(StatusFormatters.bytes(agent.byteCount))
-                            .font(.body.monospacedDigit())
-                        Button {
-                            NSWorkspace.shared.open(agent.url)
-                        } label: {
-                            SymbolIcon(symbolName: "arrow.up.right.square", size: 14)
+
+                        if !agent.memorySections.isEmpty {
+                            DisclosureGroup {
+                                VStack(alignment: .leading, spacing: 10) {
+                                    ForEach(agent.memorySections) { section in
+                                        VStack(alignment: .leading, spacing: 4) {
+                                            Text(section.title)
+                                                .font(.subheadline.weight(.semibold))
+                                            Text(section.body)
+                                                .font(.callout)
+                                                .foregroundStyle(.secondary)
+                                                .textSelection(.enabled)
+                                                .fixedSize(horizontal: false, vertical: true)
+                                        }
+                                    }
+                                }
+                                .padding(.top, 6)
+                            } label: {
+                                Text("Memory")
+                                    .font(.subheadline.weight(.semibold))
+                            }
+                            .padding(.leading, 48)
                         }
-                        .buttonStyle(.borderless)
-                        .help("Open workspace")
-                        Button {
-                            copy(agent.url.path)
-                        } label: {
-                            SymbolIcon(symbolName: "doc.on.doc", size: 14)
-                        }
-                        .buttonStyle(.borderless)
-                        .help("Copy path")
                     }
                     .padding(.vertical, 6)
                     Divider()
@@ -235,5 +268,55 @@ struct SlockAgentsView: View {
     private func copy(_ value: String) {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(value, forType: .string)
+    }
+}
+
+private struct AgentAvatarView: View {
+    let agent: SlockAgentWorkspace
+
+    var body: some View {
+        Group {
+            if let avatarURL = agent.avatarURL {
+                AsyncImage(url: avatarURL) { phase in
+                    switch phase {
+                    case .success(let image):
+                        image
+                            .resizable()
+                            .scaledToFill()
+                    case .failure:
+                        fallback
+                    case .empty:
+                        ProgressView()
+                            .controlSize(.small)
+                    @unknown default:
+                        fallback
+                    }
+                }
+            } else {
+                fallback
+            }
+        }
+        .frame(width: 36, height: 36)
+        .clipShape(Circle())
+    }
+
+    private var fallback: some View {
+        ZStack {
+            Circle()
+                .fill(.secondary.opacity(0.16))
+            Text(initials)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private var initials: String {
+        let parts = agent.displayName
+            .split { !$0.isLetter && !$0.isNumber }
+        let letters = parts
+            .prefix(2)
+            .compactMap(\.first)
+        let value = String(letters).uppercased()
+        return value.isEmpty ? String(agent.id.prefix(2)).uppercased() : value
     }
 }
