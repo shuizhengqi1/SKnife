@@ -17,6 +17,8 @@ final class StatusMenusApplication: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem?
     private var defaultsObserver: NSObjectProtocol?
     private var settingsObserver: NSObjectProtocol?
+    private var statusRefreshTask: Task<Void, Never>?
+    private var statusRefreshConfiguration: String?
 
     static func main() {
         let app = NSApplication.shared
@@ -47,6 +49,7 @@ final class StatusMenusApplication: NSObject, NSApplicationDelegate {
         if let settingsObserver {
             NotificationCenter.default.removeObserver(settingsObserver)
         }
+        stopStatusRefreshLoop()
     }
 
     @objc private func showMainWindowAction(_ sender: Any?) {
@@ -151,17 +154,19 @@ final class StatusMenusApplication: NSObject, NSApplicationDelegate {
         if shouldShow {
             if statusItem == nil {
                 let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-                item.button?.title = "StatusMenus"
-                item.menu = statusMenu()
+                item.button?.title = "SKnife"
+                item.menu = statusMenu(summary: nil)
                 statusItem = item
             }
+            startStatusRefreshLoopIfNeeded()
         } else if let statusItem {
+            stopStatusRefreshLoop()
             NSStatusBar.system.removeStatusItem(statusItem)
             self.statusItem = nil
         }
     }
 
-    private func statusMenu() -> NSMenu {
+    private func statusMenu(summary: MenuBarStatusSummary?) -> NSMenu {
         let menu = NSMenu()
         menu.addItem(
             menuItem(
@@ -180,6 +185,16 @@ final class StatusMenusApplication: NSObject, NSApplicationDelegate {
             )
         )
         menu.addItem(.separator())
+
+        if let summary {
+            for line in summary.menuLines {
+                menu.addItem(disabledMenuItem(title: line))
+            }
+        } else {
+            menu.addItem(disabledMenuItem(title: "Refreshing..."))
+        }
+        menu.addItem(.separator())
+
         menu.addItem(
             menuItem(
                 title: "Quit",
@@ -191,9 +206,71 @@ final class StatusMenusApplication: NSObject, NSApplicationDelegate {
         return menu
     }
 
+    private func startStatusRefreshLoopIfNeeded() {
+        let configuration = "\(moduleStore.slockRootPath)|\(moduleStore.effectiveRefreshInterval)"
+        guard statusRefreshTask == nil || statusRefreshConfiguration != configuration else {
+            return
+        }
+
+        statusRefreshTask?.cancel()
+        statusRefreshConfiguration = configuration
+        statusRefreshTask = Task { [weak self] in
+            while !Task.isCancelled {
+                guard let self else {
+                    break
+                }
+
+                await self.refreshStatusMenu()
+
+                do {
+                    try await Task.sleep(nanoseconds: self.refreshNanoseconds)
+                } catch {
+                    break
+                }
+            }
+        }
+    }
+
+    private func stopStatusRefreshLoop() {
+        statusRefreshTask?.cancel()
+        statusRefreshTask = nil
+        statusRefreshConfiguration = nil
+    }
+
+    private func refreshStatusMenu() async {
+        guard statusItem != nil else {
+            return
+        }
+
+        let root = URL(fileURLWithPath: NSString(string: moduleStore.slockRootPath).expandingTildeInPath)
+        let summary = await Task.detached(priority: .utility) {
+            let processOutput = (try? Shell.live.run(["/bin/ps", "-axo", "pid,etime,pcpu,pmem,command"])) ?? ""
+            let slock = try? SlockDiscoveryService().snapshot(rootURL: root, processOutput: processOutput)
+            let usage = UsageService().snapshot(processOutput: processOutput)
+            return MenuBarStatusSummary(slock: slock, usage: usage)
+        }.value
+
+        guard !Task.isCancelled else {
+            return
+        }
+
+        statusItem?.button?.title = summary.buttonTitle
+        statusItem?.menu = statusMenu(summary: summary)
+    }
+
+    private var refreshNanoseconds: UInt64 {
+        UInt64(moduleStore.effectiveRefreshInterval * 1_000_000_000)
+    }
+
     private func menuItem(title: String, action: Selector, keyEquivalent: String, target: AnyObject) -> NSMenuItem {
         let item = NSMenuItem(title: title, action: action, keyEquivalent: keyEquivalent)
         item.target = target
+        return item
+    }
+
+    private func disabledMenuItem(title: String) -> NSMenuItem {
+        let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+        item.isEnabled = false
         return item
     }
 }

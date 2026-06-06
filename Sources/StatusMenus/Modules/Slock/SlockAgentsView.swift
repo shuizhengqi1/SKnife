@@ -65,11 +65,13 @@ struct SlockAgentsView: View {
             }
             .padding(24)
         }
-        .task(id: moduleStore.slockRootPath) {
-            if snapshot == nil {
-                refresh()
-            }
+        .task(id: refreshLoopID) {
+            await refreshLoop()
         }
+    }
+
+    private var refreshLoopID: String {
+        "\(moduleStore.slockRootPath)|\(moduleStore.effectiveRefreshInterval)"
     }
 
     @ViewBuilder
@@ -187,25 +189,47 @@ struct SlockAgentsView: View {
     }
 
     private func refresh() {
+        Task {
+            await refreshNow()
+        }
+    }
+
+    @MainActor
+    private func refreshLoop() async {
+        while !Task.isCancelled {
+            await refreshNow()
+
+            do {
+                try await Task.sleep(nanoseconds: refreshNanoseconds)
+            } catch {
+                break
+            }
+        }
+    }
+
+    @MainActor
+    private func refreshNow() async {
         guard !isRefreshing else {
             return
         }
 
         let root = URL(fileURLWithPath: NSString(string: moduleStore.slockRootPath).expandingTildeInPath)
         isRefreshing = true
-        Task {
-            do {
-                let nextSnapshot = try await Task.detached(priority: .utility) {
-                    try SlockDiscoveryService().liveSnapshot(rootURL: root)
-                }.value
-                snapshot = nextSnapshot
-                errorMessage = nil
-            } catch {
-                snapshot = nil
-                errorMessage = error.localizedDescription
-            }
-            isRefreshing = false
+        do {
+            let nextSnapshot = try await Task.detached(priority: .utility) {
+                try SlockDiscoveryService().liveSnapshot(rootURL: root)
+            }.value
+            snapshot = nextSnapshot
+            errorMessage = nil
+        } catch {
+            snapshot = nil
+            errorMessage = error.localizedDescription
         }
+        isRefreshing = false
+    }
+
+    private var refreshNanoseconds: UInt64 {
+        UInt64(moduleStore.effectiveRefreshInterval * 1_000_000_000)
     }
 
     private func copy(_ value: String) {

@@ -3,6 +3,9 @@ import Foundation
 
 @MainActor
 public final class ModuleStore: ObservableObject {
+    public static let defaultRefreshInterval: Double = 5
+    public static let minimumRefreshInterval: Double = 1
+
     @Published public var selectedModule: ModuleID
     @Published public var refreshInterval: Double {
         didSet { userDefaults.set(refreshInterval, forKey: Keys.refreshInterval) }
@@ -17,7 +20,7 @@ public final class ModuleStore: ObservableObject {
     public init(userDefaults: UserDefaults = .standard) {
         self.userDefaults = userDefaults
         self.selectedModule = .storage
-        self.refreshInterval = userDefaults.object(forKey: Keys.refreshInterval) as? Double ?? 10
+        self.refreshInterval = userDefaults.object(forKey: Keys.refreshInterval) as? Double ?? Self.defaultRefreshInterval
         self.slockRootPath = userDefaults.string(forKey: Keys.slockRootPath)
             ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".slock").path
 
@@ -28,6 +31,10 @@ public final class ModuleStore: ObservableObject {
 
     public var enabledDescriptors: [ModuleDescriptor] {
         ModuleRegistry.builtIns.filter { isEnabled($0.id) }
+    }
+
+    public var effectiveRefreshInterval: Double {
+        max(Self.minimumRefreshInterval, refreshInterval)
     }
 
     public func isEnabled(_ moduleID: ModuleID) -> Bool {

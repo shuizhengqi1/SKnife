@@ -17,10 +17,12 @@ enum StatusMenusCoreChecks {
     static func main() async throws {
         try run("registry contains required built-ins", registryContainsRequiredBuiltInsInStableOrder)
         try await run("module store persists disabled modules", moduleStorePersistsDisabledModulesAndKeepsManagerEnabled)
+        try await run("module store defaults refresh interval", moduleStoreDefaultsRefreshInterval)
         try run("Slock discovery scans all directories", discoveryScansAllAgentAndMachineDirectoriesWithoutFixedIDs)
         try run("Slock discovery resolves nested paths", discoveryResolvesNestedSlockPaths)
         try run("Slock discovery reports inactive", discoveryReportsInactiveWhenNoSlockStateExists)
         try run("Slock discovery detects current home when present", discoveryDetectsCurrentHomeWhenPresent)
+        try run("menu bar summary includes Slock and usage details", menuBarSummaryIncludesSlockAndUsageDetails)
         try run("shell captures large output", shellCapturesLargeOutputWithoutDeadlock)
         try run("process parser redacts command", parsePSOutputFiltersKeywordsAndRedactsCommand)
         try run("process parser keeps display name", parsePSOutputKeepsDisplayNameWhenCommandIsRedacted)
@@ -82,6 +84,20 @@ enum StatusMenusCoreChecks {
         let restored = ModuleStore(userDefaults: defaults)
         try expect(!restored.isEnabled(.storage), "storage disabled state should persist")
         try expect(restored.isEnabled(.modules), "module manager should restore as enabled")
+    }
+
+    @MainActor
+    private static func moduleStoreDefaultsRefreshInterval() async throws {
+        let suiteName = "StatusMenusTests.ModuleStore.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defaults.removePersistentDomain(forName: suiteName)
+        let store = ModuleStore(userDefaults: defaults)
+
+        try expect(store.refreshInterval == 5, "refresh interval should default to 5 seconds")
+        try expect(store.effectiveRefreshInterval == 5, "effective refresh interval should use the default")
+
+        store.refreshInterval = 0.25
+        try expect(store.effectiveRefreshInterval == 1, "effective refresh interval should clamp very small values")
     }
 
     private static func discoveryScansAllAgentAndMachineDirectoriesWithoutFixedIDs() throws {
@@ -159,6 +175,34 @@ enum StatusMenusCoreChecks {
         let fromAgentsDirectory = try SlockDiscoveryService().snapshot(rootURL: root.appendingPathComponent("agents"), processOutput: "")
         try expect(fromAgentsDirectory.rootURL.standardizedFileURL == root.standardizedFileURL, "agents directory path should resolve to Slock root")
         try expect(fromAgentsDirectory.agents.map(\.id) == ["agent-workspace"], "agents directory scan should still find the agent")
+    }
+
+    private static func menuBarSummaryIncludesSlockAndUsageDetails() throws {
+        let root = try makeTemporarySlockRoot()
+        try FileManager.default.createDirectory(at: root.appendingPathComponent("agents/agent-a"), withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: root.appendingPathComponent("agents/agent-b"), withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: root.appendingPathComponent("machines/machine-a/traces"), withIntermediateDirectories: true)
+        let slockOutput = """
+        PID ELAPSED %CPU %MEM COMMAND
+        42 00:10 1.5 0.4 /usr/local/bin/node /tmp/@slock-ai/daemon --token secret
+        """
+        let slock = try SlockDiscoveryService().snapshot(rootURL: root, processOutput: slockOutput)
+        let usageOutput = """
+        PID ELAPSED %CPU %MEM COMMAND
+        101 00:20 9.0 2.0 /usr/local/bin/heavy
+        102 00:30 1.0 5.0 /usr/local/bin/memoryhog
+        """
+        let usage = UsageService(shell: Shell { _ in usageOutput }).snapshot()
+
+        let summary = MenuBarStatusSummary(slock: slock, usage: usage)
+
+        try expect(summary.buttonTitle == "SKnife 2A", "button title should include compact agent count")
+        try expect(summary.menuLines.contains("Agents: 2"), "menu should include agent count")
+        try expect(summary.menuLines.contains("Agent CPU: 1.5%"), "menu should include Slock agent CPU")
+        try expect(summary.menuLines.contains("Agent MEM: 0.4%"), "menu should include Slock agent memory")
+        try expect(summary.menuLines.contains("Top CPU: heavy 9.0%"), "menu should include top CPU process")
+        try expect(summary.menuLines.contains("Top MEM: memoryhog 5.0%"), "menu should include top memory process")
+        try expect(summary.menuLines.allSatisfy { $0.count <= 30 }, "menu lines should stay compact")
     }
 
     private static func parsePSOutputFiltersKeywordsAndRedactsCommand() throws {
