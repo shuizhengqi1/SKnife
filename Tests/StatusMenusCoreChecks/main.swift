@@ -59,7 +59,7 @@ enum StatusMenusCoreChecks {
     }
 
     @MainActor
-    private static func moduleStorePersistsDisabledModulesAndKeepsManagerEnabled() throws {
+    private static func moduleStorePersistsDisabledModulesAndKeepsManagerEnabled() async throws {
         let suiteName = "StatusMenusTests.ModuleStore.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
         defaults.removePersistentDomain(forName: suiteName)
