@@ -42,8 +42,9 @@ public struct SlockDiscoveryService {
     }
 
     public func snapshot(rootURL: URL, processOutput: String) throws -> SlockSnapshot {
-        let agents = discoverAgents(rootURL: rootURL)
-        let machines = discoverMachines(rootURL: rootURL)
+        let resolvedRootURL = resolveRootURL(from: rootURL)
+        let agents = discoverAgents(rootURL: resolvedRootURL)
+        let machines = discoverMachines(rootURL: resolvedRootURL)
         let processes = ProcessParser.parsePSOutput(
             processOutput,
             matching: ["slock", "@slock-ai/daemon"],
@@ -65,12 +66,55 @@ public struct SlockDiscoveryService {
         }
 
         return SlockSnapshot(
-            rootURL: rootURL,
+            rootURL: resolvedRootURL,
             agents: agents,
             machines: machines,
             processes: processes,
             status: status
         )
+    }
+
+    private func resolveRootURL(from preferredRootURL: URL) -> URL {
+        let candidates = candidateRootURLs(from: preferredRootURL)
+        return candidates.first(where: hasSlockState) ?? candidates.first ?? preferredRootURL
+    }
+
+    private func candidateRootURLs(from preferredRootURL: URL) -> [URL] {
+        let preferred = normalizedURL(preferredRootURL)
+        var candidates: [URL] = []
+        appendUnique(preferred, to: &candidates)
+
+        let components = preferred.pathComponents
+        if let agentsIndex = components.lastIndex(of: "agents"), agentsIndex > 0 {
+            appendUnique(URL(fileURLWithPath: NSString.path(withComponents: Array(components.prefix(upTo: agentsIndex)))), to: &candidates)
+        }
+
+        if let slockIndex = components.lastIndex(of: ".slock") {
+            appendUnique(URL(fileURLWithPath: NSString.path(withComponents: Array(components.prefix(through: slockIndex)))), to: &candidates)
+        }
+
+        let defaultRoot = normalizedURL(Self.defaultRootURL)
+        if preferred.path == defaultRoot.path || !fileManager.fileExists(atPath: preferred.path) {
+            appendUnique(defaultRoot, to: &candidates)
+        }
+        return candidates
+    }
+
+    private func appendUnique(_ url: URL, to candidates: inout [URL]) {
+        let normalized = normalizedURL(url)
+        guard !candidates.contains(where: { $0.path == normalized.path }) else {
+            return
+        }
+        candidates.append(normalized)
+    }
+
+    private func normalizedURL(_ url: URL) -> URL {
+        URL(fileURLWithPath: NSString(string: url.path).expandingTildeInPath).standardizedFileURL
+    }
+
+    private func hasSlockState(rootURL: URL) -> Bool {
+        !directoryChildren(rootURL.appendingPathComponent("agents")).isEmpty
+            || !directoryChildren(rootURL.appendingPathComponent("machines")).isEmpty
     }
 
     private func discoverAgents(rootURL: URL) -> [SlockAgentWorkspace] {

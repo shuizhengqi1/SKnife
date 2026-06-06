@@ -3,18 +3,21 @@ import SwiftUI
 
 struct ContentView: View {
     @EnvironmentObject private var moduleStore: ModuleStore
+    @State private var selectedModule: ModuleID? = .storage
 
     var body: some View {
         NavigationSplitView {
-            SidebarView(selection: selectedModuleBinding)
+            SidebarView(selection: $selectedModule)
                 .navigationSplitViewColumnWidth(min: 220, ideal: 250)
         } detail: {
-            detailView(for: moduleStore.selectedModule)
+            detailView(for: selectedModuleID)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .toolbar {
             ToolbarItemGroup {
-                SettingsLink {
+                Button {
+                    NotificationCenter.default.post(name: .statusMenusOpenSettings, object: nil)
+                } label: {
                     HStack(spacing: 6) {
                         SymbolIcon(symbolName: "gear", size: 16)
                         Text("Settings")
@@ -23,22 +26,13 @@ struct ContentView: View {
                 .help("Open Settings")
             }
         }
-        .onAppear {
-            if !moduleStore.isEnabled(moduleStore.selectedModule) {
-                moduleStore.selectedModule = .modules
-            }
-        }
     }
 
-    private var selectedModuleBinding: Binding<ModuleID?> {
-        Binding<ModuleID?>(
-            get: { moduleStore.selectedModule },
-            set: { newValue in
-                if let newValue {
-                    moduleStore.selectedModule = newValue
-                }
-            }
-        )
+    private var selectedModuleID: ModuleID {
+        if let selectedModule, moduleStore.isEnabled(selectedModule) {
+            return selectedModule
+        }
+        return .modules
     }
 
     @ViewBuilder

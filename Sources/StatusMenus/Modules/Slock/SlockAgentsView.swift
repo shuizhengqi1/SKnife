@@ -6,6 +6,7 @@ struct SlockAgentsView: View {
     @EnvironmentObject private var moduleStore: ModuleStore
     @State private var snapshot: SlockSnapshot?
     @State private var errorMessage: String?
+    @State private var isRefreshing = false
 
     var body: some View {
         ScrollView {
@@ -30,9 +31,10 @@ struct SlockAgentsView: View {
                         } label: {
                             HStack(spacing: 6) {
                                 SymbolIcon(symbolName: "arrow.clockwise", size: 14)
-                                Text("Refresh")
+                                Text(isRefreshing ? "Refreshing" : "Refresh")
                             }
                         }
+                        .disabled(isRefreshing)
                     }
 
                     LazyVGrid(columns: [GridItem(.adaptive(minimum: 180), spacing: 12)], spacing: 12) {
@@ -55,14 +57,19 @@ struct SlockAgentsView: View {
                     } label: {
                         HStack(spacing: 6) {
                             SymbolIcon(symbolName: "arrow.clockwise", size: 14)
-                            Text("Scan Slock")
+                            Text(isRefreshing ? "Scanning" : "Scan Slock")
                         }
                     }
+                    .disabled(isRefreshing)
                 }
             }
             .padding(24)
         }
-        .onAppear(perform: refresh)
+        .task(id: moduleStore.slockRootPath) {
+            if snapshot == nil {
+                refresh()
+            }
+        }
     }
 
     @ViewBuilder
@@ -180,13 +187,24 @@ struct SlockAgentsView: View {
     }
 
     private func refresh() {
+        guard !isRefreshing else {
+            return
+        }
+
         let root = URL(fileURLWithPath: NSString(string: moduleStore.slockRootPath).expandingTildeInPath)
-        do {
-            snapshot = try SlockDiscoveryService().liveSnapshot(rootURL: root)
-            errorMessage = nil
-        } catch {
-            snapshot = nil
-            errorMessage = error.localizedDescription
+        isRefreshing = true
+        Task {
+            do {
+                let nextSnapshot = try await Task.detached(priority: .utility) {
+                    try SlockDiscoveryService().liveSnapshot(rootURL: root)
+                }.value
+                snapshot = nextSnapshot
+                errorMessage = nil
+            } catch {
+                snapshot = nil
+                errorMessage = error.localizedDescription
+            }
+            isRefreshing = false
         }
     }
 

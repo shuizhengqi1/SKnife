@@ -2,7 +2,8 @@ import StatusMenusCore
 import SwiftUI
 
 struct UsageMonitorView: View {
-    @State private var snapshot = UsageService().snapshot()
+    @State private var snapshot: UsageSnapshot?
+    @State private var isRefreshing = false
 
     var body: some View {
         ScrollView {
@@ -16,19 +17,19 @@ struct UsageMonitorView: View {
                 HStack {
                     MetricTile(
                         title: "Physical Memory",
-                        value: StatusFormatters.bytes(Int64(clamping: snapshot.memoryTotalBytes)),
+                        value: snapshot.map { StatusFormatters.bytes(Int64(clamping: $0.memoryTotalBytes)) } ?? "Not loaded",
                         subtitle: "Installed RAM",
                         symbolName: "memorychip"
                     )
                     MetricTile(
                         title: "Top CPU Rows",
-                        value: "\(snapshot.topCPUProcesses.count)",
+                        value: snapshot.map { "\($0.topCPUProcesses.count)" } ?? "0",
                         subtitle: "From ps snapshot",
                         symbolName: "cpu"
                     )
                     MetricTile(
                         title: "Captured",
-                        value: StatusFormatters.shortDateTime(snapshot.capturedAt),
+                        value: StatusFormatters.shortDateTime(snapshot?.capturedAt),
                         subtitle: "Last refresh",
                         symbolName: "clock"
                     )
@@ -39,17 +40,26 @@ struct UsageMonitorView: View {
                         .font(.headline)
                     Spacer()
                     Button {
-                        snapshot = UsageService().snapshot()
+                        refresh()
                     } label: {
                         HStack(spacing: 6) {
                             SymbolIcon(symbolName: "arrow.clockwise", size: 14)
-                            Text("Refresh")
+                            Text(isRefreshing ? "Refreshing" : "Refresh")
                         }
                     }
+                    .disabled(isRefreshing)
                 }
 
-                processTable(title: "CPU", processes: snapshot.topCPUProcesses, value: { String(format: "%.1f%%", $0.cpuPercent) })
-                processTable(title: "Memory", processes: snapshot.topMemoryProcesses, value: { String(format: "%.1f%%", $0.memoryPercent) })
+                if let snapshot {
+                    processTable(title: "CPU", processes: snapshot.topCPUProcesses, value: { String(format: "%.1f%%", $0.cpuPercent) })
+                    processTable(title: "Memory", processes: snapshot.topMemoryProcesses, value: { String(format: "%.1f%%", $0.memoryPercent) })
+                } else {
+                    EmptyStateView(
+                        title: "Usage snapshot not loaded",
+                        message: "Press Refresh to capture a local process snapshot.",
+                        symbolName: "chart.bar"
+                    )
+                }
             }
             .padding(24)
         }
@@ -76,6 +86,21 @@ struct UsageMonitorView: View {
                 .padding(.vertical, 4)
                 Divider()
             }
+        }
+    }
+
+    private func refresh() {
+        guard !isRefreshing else {
+            return
+        }
+
+        isRefreshing = true
+        Task {
+            let nextSnapshot = await Task.detached(priority: .utility) {
+                UsageService().snapshot()
+            }.value
+            snapshot = nextSnapshot
+            isRefreshing = false
         }
     }
 }

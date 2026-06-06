@@ -18,7 +18,10 @@ enum StatusMenusCoreChecks {
         try run("registry contains required built-ins", registryContainsRequiredBuiltInsInStableOrder)
         try await run("module store persists disabled modules", moduleStorePersistsDisabledModulesAndKeepsManagerEnabled)
         try run("Slock discovery scans all directories", discoveryScansAllAgentAndMachineDirectoriesWithoutFixedIDs)
+        try run("Slock discovery resolves nested paths", discoveryResolvesNestedSlockPaths)
         try run("Slock discovery reports inactive", discoveryReportsInactiveWhenNoSlockStateExists)
+        try run("Slock discovery detects current home when present", discoveryDetectsCurrentHomeWhenPresent)
+        try run("shell captures large output", shellCapturesLargeOutputWithoutDeadlock)
         try run("process parser redacts command", parsePSOutputFiltersKeywordsAndRedactsCommand)
         try run("process parser keeps display name", parsePSOutputKeepsDisplayNameWhenCommandIsRedacted)
         try run("byte formatting uses file units", byteFormattingUsesFileStyleUnits)
@@ -128,6 +131,36 @@ enum StatusMenusCoreChecks {
         try expect(snapshot.status == .inactive, "status should be inactive")
     }
 
+    private static func discoveryDetectsCurrentHomeWhenPresent() throws {
+        let root = SlockDiscoveryService.defaultRootURL
+        guard FileManager.default.fileExists(atPath: root.path) else {
+            return
+        }
+
+        let hasLocalState = !directoryChildren(root.appendingPathComponent("agents")).isEmpty
+            || !directoryChildren(root.appendingPathComponent("machines")).isEmpty
+        guard hasLocalState else {
+            return
+        }
+
+        let snapshot = try SlockDiscoveryService().snapshot(rootURL: root, processOutput: "")
+        try expect(!snapshot.agents.isEmpty || !snapshot.machines.isEmpty, "current home Slock state should be discovered")
+    }
+
+    private static func discoveryResolvesNestedSlockPaths() throws {
+        let root = try makeTemporarySlockRoot()
+        let agent = root.appendingPathComponent("agents/agent-workspace")
+        try FileManager.default.createDirectory(at: agent.appendingPathComponent(".slock"), withIntermediateDirectories: true)
+
+        let fromAgentWorkspace = try SlockDiscoveryService().snapshot(rootURL: agent, processOutput: "")
+        try expect(fromAgentWorkspace.rootURL.standardizedFileURL == root.standardizedFileURL, "agent workspace path should resolve to Slock root")
+        try expect(fromAgentWorkspace.agents.map(\.id) == ["agent-workspace"], "agent workspace scan should still find the agent")
+
+        let fromAgentsDirectory = try SlockDiscoveryService().snapshot(rootURL: root.appendingPathComponent("agents"), processOutput: "")
+        try expect(fromAgentsDirectory.rootURL.standardizedFileURL == root.standardizedFileURL, "agents directory path should resolve to Slock root")
+        try expect(fromAgentsDirectory.agents.map(\.id) == ["agent-workspace"], "agents directory scan should still find the agent")
+    }
+
     private static func parsePSOutputFiltersKeywordsAndRedactsCommand() throws {
         let output = """
         PID ELAPSED %CPU %MEM COMMAND
@@ -142,6 +175,11 @@ enum StatusMenusCoreChecks {
         try expect(rows[0].cpuPercent == 4.5, "cpu should parse")
         try expect(rows[0].memoryPercent == 1.1, "memory should parse")
         try expect(rows[0].commandLine == ProcessParser.redactedCommand, "command should be redacted")
+    }
+
+    private static func shellCapturesLargeOutputWithoutDeadlock() throws {
+        let output = try Shell.live.run(["/bin/sh", "-c", "yes slock | head -n 50000"])
+        try expect(output.count > 250_000, "large shell output should be captured")
     }
 
     private static func parsePSOutputKeepsDisplayNameWhenCommandIsRedacted() throws {
@@ -218,5 +256,15 @@ enum StatusMenusCoreChecks {
             .appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
         return url
+    }
+
+    private static func directoryChildren(_ url: URL) -> [URL] {
+        (try? FileManager.default.contentsOfDirectory(
+            at: url,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles]
+        ))?
+            .filter { (try? $0.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true }
+            ?? []
     }
 }

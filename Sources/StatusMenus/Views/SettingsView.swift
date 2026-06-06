@@ -3,6 +3,7 @@ import SwiftUI
 
 struct SettingsView: View {
     @EnvironmentObject private var moduleStore: ModuleStore
+    @AppStorage("StatusMenus.showMenuBarStatus") private var showMenuBarStatus = false
 
     var body: some View {
         Form {
@@ -19,7 +20,7 @@ struct SettingsView: View {
             }
 
             Section("Status") {
-                Toggle("Show menu bar status", isOn: $moduleStore.showMenuBarStatus)
+                Toggle("Show menu bar status", isOn: $showMenuBarStatus)
 
                 Picker("Refresh interval", selection: $moduleStore.refreshInterval) {
                     Text("5 seconds").tag(5.0)
@@ -31,9 +32,9 @@ struct SettingsView: View {
             }
 
             Section("Slock") {
-                TextField("Slock root", text: $moduleStore.slockRootPath)
+                TextField("Slock path hint", text: $moduleStore.slockRootPath)
                     .textFieldStyle(.roundedBorder)
-                Text("Default: ~/.slock. The app scans agents and machines below this folder.")
+                Text("Default: ~/.slock. The app also accepts an agents folder or a single agent workspace and resolves the real Slock root automatically.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

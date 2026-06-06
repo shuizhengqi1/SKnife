@@ -4,9 +4,6 @@ import Foundation
 @MainActor
 public final class ModuleStore: ObservableObject {
     @Published public var selectedModule: ModuleID
-    @Published public var showMenuBarStatus: Bool {
-        didSet { userDefaults.set(showMenuBarStatus, forKey: Keys.showMenuBarStatus) }
-    }
     @Published public var refreshInterval: Double {
         didSet { userDefaults.set(refreshInterval, forKey: Keys.refreshInterval) }
     }
@@ -20,7 +17,6 @@ public final class ModuleStore: ObservableObject {
     public init(userDefaults: UserDefaults = .standard) {
         self.userDefaults = userDefaults
         self.selectedModule = .storage
-        self.showMenuBarStatus = userDefaults.object(forKey: Keys.showMenuBarStatus) as? Bool ?? false
         self.refreshInterval = userDefaults.object(forKey: Keys.refreshInterval) as? Double ?? 10
         self.slockRootPath = userDefaults.string(forKey: Keys.slockRootPath)
             ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".slock").path
@@ -55,12 +51,8 @@ public final class ModuleStore: ObservableObject {
             disabledModuleIDs.remove(moduleID)
         } else {
             disabledModuleIDs.insert(moduleID)
-            if selectedModule == moduleID {
-                selectedModule = .modules
-            }
         }
         persistDisabledModules()
-        objectWillChange.send()
     }
 
     private func persistDisabledModules() {
@@ -70,7 +62,6 @@ public final class ModuleStore: ObservableObject {
 
     private enum Keys {
         static let disabledModules = "StatusMenus.disabledModules"
-        static let showMenuBarStatus = "StatusMenus.showMenuBarStatus"
         static let refreshInterval = "StatusMenus.refreshInterval"
         static let slockRootPath = "StatusMenus.slockRootPath"
     }
