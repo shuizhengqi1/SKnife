@@ -17,14 +17,14 @@ The app is a normal Dock app with an optional menu bar status item.
 
 The project workspace is currently an empty git repository at `/Users/xingege/Documents/statusmenus`.
 
-Slock is treated as a local-daemon-backed agent system. Public Slock material describes agents running on the user's computer through `npx @slock-ai/daemon`, and the current machine has local Slock state under `~/.slock`.
+Slock is treated as a local-daemon-backed agent system. Public Slock material describes agents running on the user's computer through `npx @slock-ai/daemon`, and the app should auto-detect local Slock state under the configured Slock root, defaulting to `~/.slock`.
 
-Observed local Slock paths:
+Slock discovery patterns:
 
-- `~/.slock/agents/12859a73-9740-46b0-a796-b7336634c7d4`
-- `~/.slock/machines/machine-7b1809655b96dfb5`
-- `~/.slock/machines/machine-7b1809655b96dfb5/traces`
-- `~/.slock/machines/machine-7b1809655b96dfb5/daemon.lock/owner.json`
+- `~/.slock/agents/*`
+- `~/.slock/machines/*`
+- `~/.slock/machines/*/traces`
+- `~/.slock/machines/*/daemon.lock/owner.json`
 
 The app must not display token file contents or full daemon command arguments.
 
@@ -66,7 +66,7 @@ Settings:
 - Toggle menu bar status.
 - Choose refresh interval.
 - Configure safety options for cleanup.
-- Configure Slock root path if the default `~/.slock` is not correct.
+- Configure Slock root path if the auto-detected default `~/.slock` is not correct.
 
 ## Module architecture
 
@@ -151,10 +151,11 @@ Purpose:
 
 Inputs:
 
-- `~/.slock/agents`
-- `~/.slock/machines`
-- `daemon.lock/owner.json`
-- Trace JSONL filenames and file metadata
+- Slock root directory, defaulting to `~/.slock`
+- Agent workspace directories discovered under `<slock-root>/agents`
+- Machine directories discovered under `<slock-root>/machines`
+- Lock owner files discovered under `<slock-root>/machines/*/daemon.lock/owner.json`
+- Trace JSONL filenames and file metadata discovered under `<slock-root>/machines/*/traces`
 - Process list filtered for Slock-related processes
 
 Privacy and safety:
@@ -163,6 +164,7 @@ Privacy and safety:
 - Do not show full daemon command arguments because they may contain credentials.
 - Do not mutate Slock state in v1.
 - Do not start or stop agents in v1 unless explicitly added later.
+- Do not hardcode agent UUIDs or machine IDs. All agent and machine rows are discovered from local directories at refresh time.
 
 Status model:
 
@@ -262,7 +264,7 @@ Manual verification:
 - Main window appears at launch.
 - Settings opens from toolbar/menu.
 - Modules can be enabled and disabled.
-- Slock module detects the existing `testAgent` workspace path.
+- Slock module detects local agent workspaces by scanning `~/.slock/agents`, including the existing development workspace when present.
 - No token files or full Slock daemon command arguments appear in UI.
 
 ## Non-goals for v1
