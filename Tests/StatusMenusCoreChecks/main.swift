@@ -31,6 +31,7 @@ enum StatusMenusCoreChecks {
         try run("byte formatting uses file units", byteFormattingUsesFileStyleUnits)
         try run("percent formatting handles zero total", percentFormattingHandlesZeroTotal)
         try run("storage summary skips recursive folder sizes", storageSummarySnapshotSkipsRecursiveFolderSizes)
+        try run("storage analysis builds ranked tree and cleanup candidates", storageAnalysisBuildsRankedTreeAndCleanupCandidates)
         try run("storage placeholder skips disk capacity", storagePlaceholderSkipsDiskCapacity)
         try run("storage empty snapshot has no work", storageEmptySnapshotHasNoWork)
         print("StatusMenusCoreChecks passed")
@@ -157,7 +158,7 @@ enum StatusMenusCoreChecks {
         General Slock AI agent available for coding, research, and debugging.
 
         ## Key Knowledge
-        - Knows the SKnife app structure.
+        - Knows the AgentDock app structure.
         - Tracks local Slock workspaces.
 
         ## Active Context
@@ -176,7 +177,7 @@ enum StatusMenusCoreChecks {
         try expect(profile.avatarURL?.absoluteString == "https://cdn.example.test/testAgent.png", "avatar URL should come from local metadata")
         try expect(profile.description == "General Slock AI agent available for coding, research, and debugging.", "description should come from Role section")
         try expect(profile.memorySections.map(\.title) == ["Key Knowledge", "Active Context"], "memory sections should be extracted")
-        try expect(profile.memorySections.first?.body.contains("SKnife app structure") == true, "memory section body should be preserved")
+        try expect(profile.memorySections.first?.body.contains("AgentDock app structure") == true, "memory section body should be preserved")
     }
 
     private static func discoveryWritesAgentMemoryDraft() throws {
@@ -272,7 +273,7 @@ enum StatusMenusCoreChecks {
 
         let summary = MenuBarStatusSummary(slock: slock, usage: usage)
 
-        try expect(summary.buttonTitle == "SKnife 2A", "button title should include compact agent count")
+        try expect(summary.buttonTitle == "AgentDock 2A", "button title should include compact agent count")
         try expect(summary.menuLines.contains("Agents: 2"), "menu should include agent count")
         try expect(summary.menuLines.contains("Agent names: agent-a, agent-b"), "menu should include agent display names")
         try expect(summary.menuLines.contains("Agent CPU: 1.5%"), "menu should include Slock agent CPU")
@@ -342,6 +343,39 @@ enum StatusMenusCoreChecks {
         try expect(snapshot.folders.allSatisfy { $0.byteCount == nil }, "summary mode must not calculate folder sizes")
     }
 
+    private static func storageAnalysisBuildsRankedTreeAndCleanupCandidates() throws {
+        let root = try makeTemporaryDirectory()
+        let derivedData = root.appendingPathComponent("Library/Developer/Xcode/DerivedData/project-a")
+        let caches = root.appendingPathComponent("Library/Caches/com.example.cache")
+        let downloads = root.appendingPathComponent("Downloads")
+        let documents = root.appendingPathComponent("Documents")
+        try FileManager.default.createDirectory(at: derivedData, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: caches, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: downloads, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: documents, withIntermediateDirectories: true)
+        try writeBytes(1_200_000, to: derivedData.appendingPathComponent("index.db"))
+        try writeBytes(800_000, to: caches.appendingPathComponent("blob.cache"))
+        try writeBytes(400_000, to: downloads.appendingPathComponent("archive.zip"))
+        try writeBytes(200_000, to: documents.appendingPathComponent("notes.txt"))
+
+        let analysis = StorageService().analysis(
+            rootURL: root,
+            maxDepth: 5,
+            includeHidden: true,
+            includeDiskCapacity: false
+        )
+
+        try expect(analysis.root.url.standardizedFileURL == root.standardizedFileURL, "analysis root should match requested root")
+        try expect(analysis.indexedFileCount == 4, "analysis should index all files")
+        try expect(analysis.root.byteCount > 2_000_000, "analysis root should accumulate child sizes")
+        try expect(analysis.rankedNodes.first?.url.path.contains("Library") == true, "largest ranked node should come from Library")
+        try expect(analysis.cleanupCandidates.contains { $0.url.path.contains("DerivedData") && $0.risk == .safe }, "DerivedData should be a safe cleanup candidate")
+        try expect(analysis.cleanupCandidates.contains { $0.url.path.contains("Library/Caches") && $0.risk == .safe }, "Caches should be a safe cleanup candidate")
+        try expect(analysis.cleanupCandidates.contains { $0.url.path.contains("Downloads") && $0.risk == .review }, "Downloads should require review")
+        try expect(!analysis.cleanupCandidates.contains { $0.url.path.contains("Documents") }, "Documents should not be a cleanup candidate")
+        try expect(analysis.scanLog.contains { $0.contains("Indexed 4 files") }, "scan log should include indexed file count")
+    }
+
     private static func storagePlaceholderSkipsDiskCapacity() throws {
         let root = try makeTemporaryDirectory()
 
@@ -377,6 +411,11 @@ enum StatusMenusCoreChecks {
             .appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
         return url
+    }
+
+    private static func writeBytes(_ count: Int, to url: URL) throws {
+        let data = Data(repeating: 0x2A, count: count)
+        try data.write(to: url)
     }
 
     private static func directoryChildren(_ url: URL) -> [URL] {

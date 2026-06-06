@@ -8,12 +8,17 @@ let package = Package(
     ],
     products: [
         .executable(name: "StatusMenus", targets: ["StatusMenus"]),
+        .executable(name: "agentdock", targets: ["AgentDockCLI"]),
         .library(name: "StatusMenusCore", targets: ["StatusMenusCore"])
     ],
     targets: [
         .target(name: "StatusMenusCore"),
         .executableTarget(
             name: "StatusMenus",
+            dependencies: ["StatusMenusCore"]
+        ),
+        .executableTarget(
+            name: "AgentDockCLI",
             dependencies: ["StatusMenusCore"]
         ),
         .executableTarget(

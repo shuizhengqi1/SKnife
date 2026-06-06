@@ -9,7 +9,7 @@ struct MenuBarStatusView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Button("Open StatusMenus") {
+            Button("Open AgentDock") {
                 openWindow(id: "main")
                 NSApp.activate(ignoringOtherApps: true)
             }

@@ -14,7 +14,7 @@ public struct MenuBarStatusSummary: Equatable {
         let agentMemory = slock?.processes.reduce(0) { $0 + $1.memoryPercent } ?? 0
         let agentDisk = slock?.agents.reduce(Int64(0)) { $0 + $1.byteCount } ?? 0
 
-        self.buttonTitle = "SKnife \(agentCount)A"
+        self.buttonTitle = "AgentDock \(agentCount)A"
 
         var lines = [
             "Slock: \(status.label)",

@@ -67,7 +67,8 @@ final class StatusMenusApplication: NSObject, NSApplicationDelegate {
                 backing: .buffered,
                 defer: false
             )
-            window.title = "StatusMenus Settings"
+            window.title = "AgentDock Settings"
+            window.isReleasedWhenClosed = false
             window.contentView = NSHostingView(rootView: view)
             window.center()
             settingsWindow = window
@@ -81,20 +82,24 @@ final class StatusMenusApplication: NSObject, NSApplicationDelegate {
         if mainWindow == nil {
             let view = ContentView()
                 .environmentObject(moduleStore)
-                .frame(minWidth: 900, minHeight: 620)
+                .frame(minWidth: 1040, minHeight: 660)
             let window = NSWindow(
-                contentRect: NSRect(x: 0, y: 0, width: 980, height: 680),
+                contentRect: NSRect(x: 0, y: 0, width: 1240, height: 760),
                 styleMask: [.titled, .closable, .miniaturizable, .resizable],
                 backing: .buffered,
                 defer: false
             )
-            window.title = "StatusMenus"
+            window.title = "AgentDock"
+            window.isReleasedWhenClosed = false
+            window.collectionBehavior = [.moveToActiveSpace]
             window.contentView = NSHostingView(rootView: view)
             window.center()
             mainWindow = window
         }
 
         mainWindow?.makeKeyAndOrderFront(nil)
+        mainWindow?.orderFrontRegardless()
+        NSRunningApplication.current.activate(options: [.activateAllWindows])
         NSApp.activate(ignoringOtherApps: true)
     }
 
@@ -116,7 +121,7 @@ final class StatusMenusApplication: NSObject, NSApplicationDelegate {
         appMenu.addItem(.separator())
         appMenu.addItem(
             menuItem(
-                title: "Quit StatusMenus",
+                title: "Quit AgentDock",
                 action: #selector(NSApplication.terminate(_:)),
                 keyEquivalent: "q",
                 target: NSApp
@@ -154,7 +159,7 @@ final class StatusMenusApplication: NSObject, NSApplicationDelegate {
         if shouldShow {
             if statusItem == nil {
                 let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-                item.button?.title = "SKnife"
+                item.button?.title = "AgentDock"
                 item.menu = statusMenu(summary: nil)
                 statusItem = item
             }
@@ -170,7 +175,7 @@ final class StatusMenusApplication: NSObject, NSApplicationDelegate {
         let menu = NSMenu()
         menu.addItem(
             menuItem(
-                title: "Open StatusMenus",
+                title: "Open AgentDock",
                 action: #selector(showMainWindowAction(_:)),
                 keyEquivalent: "",
                 target: self

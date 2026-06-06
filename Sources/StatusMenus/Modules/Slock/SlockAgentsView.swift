@@ -422,6 +422,11 @@ private struct SlockMemoryEditorSheet: View {
             Form {
                 Section("Profile") {
                     TextField("Name", text: $draft.displayName)
+                        .disabled(true)
+                        .help("Slock agent names are managed by Slock and are read-only here.")
+                    Text("Agent names are managed by Slock. Local edits only update description and memory sections.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                     VStack(alignment: .leading, spacing: 6) {
                         Text("Description")
                             .font(.caption)

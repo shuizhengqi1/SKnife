@@ -2,8 +2,10 @@
 set -euo pipefail
 
 MODE="${1:-run}"
-APP_NAME="StatusMenus"
-BUNDLE_ID="com.local.StatusMenus"
+PRODUCT_NAME="StatusMenus"
+APP_NAME="AgentDock"
+CLI_PRODUCT="agentdock"
+BUNDLE_ID="com.local.AgentDock"
 MIN_SYSTEM_VERSION="14.0"
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -11,19 +13,31 @@ DIST_DIR="$ROOT_DIR/dist"
 APP_BUNDLE="$DIST_DIR/$APP_NAME.app"
 APP_CONTENTS="$APP_BUNDLE/Contents"
 APP_MACOS="$APP_CONTENTS/MacOS"
+APP_RESOURCES="$APP_CONTENTS/Resources"
 APP_BINARY="$APP_MACOS/$APP_NAME"
 INFO_PLIST="$APP_CONTENTS/Info.plist"
+CLI_DIST_DIR="$DIST_DIR/bin"
+CLI_BINARY="$CLI_DIST_DIR/$CLI_PRODUCT"
+ICON_SOURCE="$ROOT_DIR/Assets/AgentDock.icns"
 
 pkill -x "$APP_NAME" >/dev/null 2>&1 || true
+pkill -x "$PRODUCT_NAME" >/dev/null 2>&1 || true
 
 cd "$ROOT_DIR"
 swift build
-BUILD_BINARY="$(swift build --show-bin-path)/$APP_NAME"
+BUILD_DIR="$(swift build --show-bin-path)"
+BUILD_BINARY="$BUILD_DIR/$PRODUCT_NAME"
+BUILD_CLI="$BUILD_DIR/$CLI_PRODUCT"
 
 rm -rf "$APP_BUNDLE"
-mkdir -p "$APP_MACOS"
+mkdir -p "$APP_MACOS" "$APP_RESOURCES" "$CLI_DIST_DIR"
 cp "$BUILD_BINARY" "$APP_BINARY"
 chmod +x "$APP_BINARY"
+cp "$BUILD_CLI" "$CLI_BINARY"
+chmod +x "$CLI_BINARY"
+if [[ -f "$ICON_SOURCE" ]]; then
+  cp "$ICON_SOURCE" "$APP_RESOURCES/AgentDock.icns"
+fi
 
 cat >"$INFO_PLIST" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -34,6 +48,8 @@ cat >"$INFO_PLIST" <<PLIST
   <string>$APP_NAME</string>
   <key>CFBundleIdentifier</key>
   <string>$BUNDLE_ID</string>
+  <key>CFBundleIconFile</key>
+  <string>AgentDock</string>
   <key>CFBundleName</key>
   <string>$APP_NAME</string>
   <key>CFBundlePackageType</key>
