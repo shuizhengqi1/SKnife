@@ -15,7 +15,10 @@ struct ContentView: View {
         .toolbar {
             ToolbarItemGroup {
                 SettingsLink {
-                    Label("Settings", systemImage: "gear")
+                    HStack(spacing: 6) {
+                        SymbolIcon(symbolName: "gear", size: 16)
+                        Text("Settings")
+                    }
                 }
                 .help("Open Settings")
             }

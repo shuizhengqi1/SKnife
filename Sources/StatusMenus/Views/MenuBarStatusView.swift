@@ -16,8 +16,14 @@ struct MenuBarStatusView: View {
 
             Divider()
 
-            Label("Modules: \(moduleStore.enabledDescriptors.count)", systemImage: "square.grid.2x2")
-            Label("Slock: \(slockStatus.label)", systemImage: "person.2.wave.2")
+            HStack {
+                SymbolIcon(symbolName: "square.grid.2x2", size: 14)
+                Text("Modules: \(moduleStore.enabledDescriptors.count)")
+            }
+            HStack {
+                SymbolIcon(symbolName: "person.2", size: 14)
+                Text("Slock: \(slockStatus.label)")
+            }
 
             Button("Refresh") {
                 refresh()

@@ -13,7 +13,7 @@ struct SlockAgentsView: View {
                 ModuleHeader(
                     title: "Slock Agents",
                     subtitle: "Auto-detected local Slock daemon state, agents, machines, and traces",
-                    symbolName: "person.2.wave.2"
+                    symbolName: "person.2"
                 )
 
                 if let snapshot {
@@ -28,12 +28,15 @@ struct SlockAgentsView: View {
                         Button {
                             refresh()
                         } label: {
-                            Label("Refresh", systemImage: "arrow.clockwise")
+                            HStack(spacing: 6) {
+                                SymbolIcon(symbolName: "arrow.clockwise", size: 14)
+                                Text("Refresh")
+                            }
                         }
                     }
 
                     LazyVGrid(columns: [GridItem(.adaptive(minimum: 180), spacing: 12)], spacing: 12) {
-                        MetricTile(title: "Agents", value: "\(snapshot.agents.count)", subtitle: "Workspaces", symbolName: "folder.badge.person.crop")
+                        MetricTile(title: "Agents", value: "\(snapshot.agents.count)", subtitle: "Workspaces", symbolName: "folder")
                         MetricTile(title: "Machines", value: "\(snapshot.machines.count)", subtitle: "Local machine records", symbolName: "desktopcomputer")
                         MetricTile(title: "Processes", value: "\(snapshot.processes.count)", subtitle: "Command redacted", symbolName: "cpu")
                     }
@@ -50,7 +53,10 @@ struct SlockAgentsView: View {
                     Button {
                         refresh()
                     } label: {
-                        Label("Scan Slock", systemImage: "arrow.clockwise")
+                        HStack(spacing: 6) {
+                            SymbolIcon(symbolName: "arrow.clockwise", size: 14)
+                            Text("Scan Slock")
+                        }
                     }
                 }
             }
@@ -73,7 +79,7 @@ struct SlockAgentsView: View {
             } else {
                 ForEach(agents) { agent in
                     HStack(spacing: 12) {
-                        Image(systemName: "folder")
+                        SymbolIcon(symbolName: "folder", size: 16)
                             .foregroundStyle(.secondary)
                         VStack(alignment: .leading, spacing: 2) {
                             Text(agent.id)
@@ -90,14 +96,14 @@ struct SlockAgentsView: View {
                         Button {
                             NSWorkspace.shared.open(agent.url)
                         } label: {
-                            Image(systemName: "arrow.up.right.square")
+                            SymbolIcon(symbolName: "arrow.up.right.square", size: 14)
                         }
                         .buttonStyle(.borderless)
                         .help("Open workspace")
                         Button {
                             copy(agent.url.path)
                         } label: {
-                            Image(systemName: "doc.on.doc")
+                            SymbolIcon(symbolName: "doc.on.doc", size: 14)
                         }
                         .buttonStyle(.borderless)
                         .help("Copy path")
@@ -131,7 +137,7 @@ struct SlockAgentsView: View {
                         Button {
                             NSWorkspace.shared.open(machine.url)
                         } label: {
-                            Image(systemName: "arrow.up.right.square")
+                            SymbolIcon(symbolName: "arrow.up.right.square", size: 14)
                         }
                         .buttonStyle(.borderless)
                         .help("Reveal machine folder")

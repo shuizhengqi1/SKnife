@@ -10,7 +10,7 @@ struct UsageMonitorView: View {
                 ModuleHeader(
                     title: "Usage Monitor",
                     subtitle: "Local process, CPU, and memory overview",
-                    symbolName: "chart.line.uptrend.xyaxis"
+                    symbolName: "chart.bar"
                 )
 
                 HStack {
@@ -41,7 +41,10 @@ struct UsageMonitorView: View {
                     Button {
                         snapshot = UsageService().snapshot()
                     } label: {
-                        Label("Refresh", systemImage: "arrow.clockwise")
+                        HStack(spacing: 6) {
+                            SymbolIcon(symbolName: "arrow.clockwise", size: 14)
+                            Text("Refresh")
+                        }
                     }
                 }
 

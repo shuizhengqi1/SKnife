@@ -23,6 +23,9 @@ enum StatusMenusCoreChecks {
         try run("process parser keeps display name", parsePSOutputKeepsDisplayNameWhenCommandIsRedacted)
         try run("byte formatting uses file units", byteFormattingUsesFileStyleUnits)
         try run("percent formatting handles zero total", percentFormattingHandlesZeroTotal)
+        try run("storage summary skips recursive folder sizes", storageSummarySnapshotSkipsRecursiveFolderSizes)
+        try run("storage placeholder skips disk capacity", storagePlaceholderSkipsDiskCapacity)
+        try run("storage empty snapshot has no work", storageEmptySnapshotHasNoWork)
         print("StatusMenusCoreChecks passed")
     }
 
@@ -160,6 +163,46 @@ enum StatusMenusCoreChecks {
     private static func percentFormattingHandlesZeroTotal() throws {
         try expect(StatusFormatters.percent(used: 50, total: 200) == "25%", "50/200 should format as 25%")
         try expect(StatusFormatters.percent(used: 50, total: 0) == "0%", "zero total should format as 0%")
+    }
+
+    private static func storageSummarySnapshotSkipsRecursiveFolderSizes() throws {
+        let root = try makeTemporaryDirectory()
+        try FileManager.default.createDirectory(
+            at: root.appendingPathComponent("Downloads"),
+            withIntermediateDirectories: true
+        )
+        try "demo".write(
+            to: root.appendingPathComponent("Downloads/file.txt"),
+            atomically: true,
+            encoding: .utf8
+        )
+
+        let snapshot = StorageService().snapshot(homeURL: root, includeFolderSizes: false)
+
+        try expect(!snapshot.folders.isEmpty, "summary should still list folders")
+        try expect(snapshot.folders.allSatisfy { $0.byteCount == nil }, "summary mode must not calculate folder sizes")
+    }
+
+    private static func storagePlaceholderSkipsDiskCapacity() throws {
+        let root = try makeTemporaryDirectory()
+
+        let snapshot = StorageService().snapshot(
+            homeURL: root,
+            includeFolderSizes: false,
+            includeDiskCapacity: false
+        )
+
+        try expect(snapshot.disk.capacity == 0, "placeholder mode should not query disk capacity")
+        try expect(snapshot.disk.available == 0, "placeholder mode should not query disk availability")
+        try expect(snapshot.folders.allSatisfy { $0.byteCount == nil }, "placeholder mode should not calculate folder sizes")
+    }
+
+    private static func storageEmptySnapshotHasNoWork() throws {
+        let snapshot = StorageSnapshot.empty
+
+        try expect(snapshot.disk.capacity == 0, "empty snapshot should not query disk capacity")
+        try expect(snapshot.disk.available == 0, "empty snapshot should not query disk availability")
+        try expect(snapshot.folders.isEmpty, "empty snapshot should not create folder URLs")
     }
 
     private static func makeTemporarySlockRoot() throws -> URL {

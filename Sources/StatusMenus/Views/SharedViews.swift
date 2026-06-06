@@ -1,5 +1,49 @@
+import AppKit
 import StatusMenusCore
 import SwiftUI
+
+@MainActor
+private enum SymbolImageCache {
+    private static var images: [String: NSImage] = [:]
+    private static var missing: Set<String> = []
+
+    static func image(named name: String) -> NSImage? {
+        if let image = images[name] {
+            return image
+        }
+        if missing.contains(name) {
+            return nil
+        }
+
+        guard let image = NSImage(systemSymbolName: name, accessibilityDescription: nil) else {
+            missing.insert(name)
+            return nil
+        }
+
+        image.isTemplate = true
+        images[name] = image
+        return image
+    }
+}
+
+struct SymbolIcon: View {
+    let symbolName: String
+    var size: CGFloat = 18
+
+    var body: some View {
+        Group {
+            if let image = SymbolImageCache.image(named: symbolName) {
+                Image(nsImage: image)
+                    .resizable()
+                    .aspectRatio(contentMode: .fit)
+            } else {
+                Text("•")
+                    .font(.system(size: size))
+            }
+        }
+        .frame(width: size, height: size)
+    }
+}
 
 struct ModuleHeader: View {
     let title: String
@@ -8,9 +52,7 @@ struct ModuleHeader: View {
 
     var body: some View {
         HStack(spacing: 14) {
-            Image(systemName: symbolName)
-                .font(.system(size: 34))
-                .symbolRenderingMode(.hierarchical)
+            SymbolIcon(symbolName: symbolName, size: 34)
                 .foregroundStyle(Color.accentColor)
 
             VStack(alignment: .leading, spacing: 4) {
@@ -39,7 +81,7 @@ struct MetricTile: View {
                     .foregroundStyle(.secondary)
                 Spacer()
                 if let symbolName {
-                    Image(systemName: symbolName)
+                    SymbolIcon(symbolName: symbolName, size: 14)
                         .foregroundStyle(.secondary)
                 }
             }
@@ -95,8 +137,7 @@ struct EmptyStateView: View {
 
     var body: some View {
         VStack(spacing: 10) {
-            Image(systemName: symbolName)
-                .font(.system(size: 32))
+            SymbolIcon(symbolName: symbolName, size: 32)
                 .foregroundStyle(.secondary)
             Text(title)
                 .font(.headline)

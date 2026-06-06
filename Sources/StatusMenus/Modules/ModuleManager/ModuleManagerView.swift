@@ -17,8 +17,7 @@ struct ModuleManagerView: View {
                     ForEach(ModuleRegistry.builtIns) { module in
                         VStack(alignment: .leading, spacing: 12) {
                             HStack {
-                                Image(systemName: module.symbolName)
-                                    .font(.title2)
+                                SymbolIcon(symbolName: module.symbolName, size: 22)
                                     .foregroundStyle(Color.accentColor)
                                 VStack(alignment: .leading, spacing: 2) {
                                     Text(module.title)

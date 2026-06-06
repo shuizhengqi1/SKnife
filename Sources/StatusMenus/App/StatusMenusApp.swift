@@ -38,11 +38,7 @@ struct StatusMenusApp: App {
                 .environmentObject(moduleStore)
         }
 
-        MenuBarExtra(
-            "StatusMenus",
-            systemImage: "rectangle.3.group",
-            isInserted: $moduleStore.showMenuBarStatus
-        ) {
+        MenuBarExtra("StatusMenus", isInserted: $moduleStore.showMenuBarStatus) {
             MenuBarStatusView()
                 .environmentObject(moduleStore)
         }

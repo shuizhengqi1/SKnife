@@ -34,13 +34,13 @@ public enum ModuleRegistry {
             id: .slock,
             title: "Slock Agents",
             subtitle: "Local daemon, agents, and traces",
-            symbolName: "person.2.wave.2"
+            symbolName: "person.2"
         ),
         ModuleDescriptor(
             id: .usage,
             title: "Usage Monitor",
             subtitle: "CPU, memory, disk, and processes",
-            symbolName: "chart.line.uptrend.xyaxis"
+            symbolName: "chart.bar"
         ),
         ModuleDescriptor(
             id: .modules,

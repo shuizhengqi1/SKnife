@@ -9,7 +9,10 @@ struct SettingsView: View {
             Section("Modules") {
                 ForEach(ModuleRegistry.builtIns) { module in
                     Toggle(isOn: enabledBinding(for: module.id)) {
-                        Label(module.title, systemImage: module.symbolName)
+                        HStack(spacing: 8) {
+                            SymbolIcon(symbolName: module.symbolName, size: 16)
+                            Text(module.title)
+                        }
                     }
                     .disabled(module.id == .modules)
                 }

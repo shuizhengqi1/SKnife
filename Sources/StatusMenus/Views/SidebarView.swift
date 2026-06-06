@@ -32,7 +32,7 @@ private struct SidebarRow: View {
                     .lineLimit(1)
             }
         } icon: {
-            Image(systemName: module.symbolName)
+            SymbolIcon(symbolName: module.symbolName, size: 16)
                 .foregroundStyle(.secondary)
         }
         .padding(.vertical, 4)

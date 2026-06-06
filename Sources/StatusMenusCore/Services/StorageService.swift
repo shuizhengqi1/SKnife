@@ -18,13 +18,18 @@ public struct FolderUsage: Identifiable, Equatable {
     public var id: String { url.path }
     public let title: String
     public let url: URL
-    public let byteCount: Int64
+    public let byteCount: Int64?
     public let isCleanupCandidate: Bool
 }
 
 public struct StorageSnapshot: Equatable {
     public let disk: DiskSnapshot
     public let folders: [FolderUsage]
+
+    public static let empty = StorageSnapshot(
+        disk: DiskSnapshot(capacity: 0, available: 0),
+        folders: []
+    )
 }
 
 public struct StorageService {
@@ -34,17 +39,23 @@ public struct StorageService {
         self.fileManager = fileManager
     }
 
-    public func snapshot(homeURL: URL = FileManager.default.homeDirectoryForCurrentUser) -> StorageSnapshot {
-        let disk = diskSnapshot(for: homeURL)
+    public func snapshot(
+        homeURL: URL = FileManager.default.homeDirectoryForCurrentUser,
+        includeFolderSizes: Bool = true,
+        includeDiskCapacity: Bool = true
+    ) -> StorageSnapshot {
+        let disk = includeDiskCapacity
+            ? diskSnapshot(for: homeURL)
+            : DiskSnapshot(capacity: 0, available: 0)
         let folders = defaultFolders(homeURL: homeURL).map { folder in
             FolderUsage(
                 title: folder.title,
                 url: folder.url,
-                byteCount: directorySize(folder.url),
+                byteCount: includeFolderSizes ? directorySize(folder.url) : nil,
                 isCleanupCandidate: folder.isCleanupCandidate
             )
         }
-        .sorted { $0.byteCount > $1.byteCount }
+        .sorted { ($0.byteCount ?? -1) > ($1.byteCount ?? -1) }
 
         return StorageSnapshot(disk: disk, folders: folders)
     }

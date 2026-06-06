@@ -2,7 +2,8 @@ import StatusMenusCore
 import SwiftUI
 
 struct StorageView: View {
-    @State private var snapshot = StorageService().snapshot()
+    @State private var snapshot = StorageSnapshot.empty
+    @State private var isScanning = false
 
     var body: some View {
         ScrollView {
@@ -16,19 +17,19 @@ struct StorageView: View {
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 180), spacing: 12)], spacing: 12) {
                     MetricTile(
                         title: "Used",
-                        value: StatusFormatters.bytes(snapshot.disk.used),
-                        subtitle: StatusFormatters.wholePercent(snapshot.disk.usedFraction),
+                        value: diskValue(StatusFormatters.bytes(snapshot.disk.used)),
+                        subtitle: snapshot.disk.capacity > 0 ? StatusFormatters.wholePercent(snapshot.disk.usedFraction) : "Loading",
                         symbolName: "chart.pie"
                     )
                     MetricTile(
                         title: "Available",
-                        value: StatusFormatters.bytes(snapshot.disk.available),
+                        value: diskValue(StatusFormatters.bytes(snapshot.disk.available)),
                         subtitle: "Free for important usage",
                         symbolName: "checkmark.seal"
                     )
                     MetricTile(
                         title: "Capacity",
-                        value: StatusFormatters.bytes(snapshot.disk.capacity),
+                        value: diskValue(StatusFormatters.bytes(snapshot.disk.capacity)),
                         subtitle: "Main volume",
                         symbolName: "externaldrive"
                     )
@@ -43,39 +44,70 @@ struct StorageView: View {
                             .font(.headline)
                         Spacer()
                         Button {
-                            snapshot = StorageService().snapshot()
+                            scanFolderSizes()
                         } label: {
-                            Label("Refresh", systemImage: "arrow.clockwise")
+                            HStack(spacing: 6) {
+                                SymbolIcon(symbolName: "arrow.clockwise", size: 14)
+                                Text(isScanning ? "Scanning" : "Scan sizes")
+                            }
                         }
+                        .disabled(isScanning)
                     }
 
-                    ForEach(snapshot.folders) { folder in
-                        HStack(spacing: 12) {
-                            Image(systemName: folder.isCleanupCandidate ? "sparkles" : "folder")
-                                .foregroundStyle(folder.isCleanupCandidate ? .orange : .secondary)
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(folder.title)
-                                Text(folder.url.path)
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                                    .lineLimit(1)
-                                    .truncationMode(.middle)
+                    if snapshot.folders.isEmpty {
+                        EmptyStateView(
+                            title: "Storage scan not started",
+                            message: "Press Scan sizes to calculate disk summary and folder candidates in the background.",
+                            symbolName: "internaldrive"
+                        )
+                    } else {
+                        ForEach(snapshot.folders) { folder in
+                            HStack(spacing: 12) {
+                                SymbolIcon(symbolName: folder.isCleanupCandidate ? "sparkles" : "folder", size: 16)
+                                    .foregroundStyle(folder.isCleanupCandidate ? .orange : .secondary)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(folder.title)
+                                    Text(folder.url.path)
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                        .lineLimit(1)
+                                        .truncationMode(.middle)
+                                }
+                                Spacer()
+                                Text(folder.byteCount.map(StatusFormatters.bytes) ?? "Not scanned")
+                                    .font(.body.monospacedDigit())
+                                if folder.isCleanupCandidate {
+                                    Text("Preview only")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
                             }
-                            Spacer()
-                            Text(StatusFormatters.bytes(folder.byteCount))
-                                .font(.body.monospacedDigit())
-                            if folder.isCleanupCandidate {
-                                Text("Preview only")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
+                            .padding(.vertical, 6)
+                            Divider()
                         }
-                        .padding(.vertical, 6)
-                        Divider()
                     }
                 }
             }
             .padding(24)
+        }
+    }
+
+    private func diskValue(_ formattedValue: String) -> String {
+        snapshot.disk.capacity > 0 ? formattedValue : "Loading"
+    }
+
+    private func scanFolderSizes() {
+        guard !isScanning else {
+            return
+        }
+
+        isScanning = true
+        Task {
+            let nextSnapshot = await Task.detached(priority: .utility) {
+                StorageService().snapshot(includeFolderSizes: true, includeDiskCapacity: true)
+            }.value
+            snapshot = nextSnapshot
+            isScanning = false
         }
     }
 }
