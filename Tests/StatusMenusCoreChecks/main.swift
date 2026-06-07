@@ -24,6 +24,7 @@ enum StatusMenusCoreChecks {
         try run("Slock discovery resolves nested paths", discoveryResolvesNestedSlockPaths)
         try run("Slock discovery reports inactive", discoveryReportsInactiveWhenNoSlockStateExists)
         try run("Slock discovery detects current home when present", discoveryDetectsCurrentHomeWhenPresent)
+        try run("Slock cost service parses local token usage telemetry", slockCostServiceParsesLocalTokenUsageTelemetry)
         try run("menu bar summary includes Slock and usage details", menuBarSummaryIncludesSlockAndUsageDetails)
         try run("shell captures large output", shellCapturesLargeOutputWithoutDeadlock)
         try run("process parser redacts command", parsePSOutputFiltersKeywordsAndRedactsCommand)
@@ -35,6 +36,7 @@ enum StatusMenusCoreChecks {
         try run("storage analysis reports progress and duration", storageAnalysisReportsProgressAndDuration)
         try run("storage analysis builds ranked tree and cleanup candidates", storageAnalysisBuildsRankedTreeAndCleanupCandidates)
         try run("storage index store persists latest analysis", storageIndexStorePersistsLatestAnalysis)
+        try await run("monitor stores keep independent state", monitorStoresKeepIndependentState)
         try run("Slock metric sample summarizes snapshot and caps history", slockMetricSampleSummarizesSnapshotAndCapsHistory)
         try run("storage placeholder skips disk capacity", storagePlaceholderSkipsDiskCapacity)
         try run("storage empty snapshot has no work", storageEmptySnapshotHasNoWork)
@@ -244,6 +246,36 @@ enum StatusMenusCoreChecks {
         try expect(!snapshot.agents.isEmpty || !snapshot.machines.isEmpty, "current home Slock state should be discovered")
     }
 
+    private static func slockCostServiceParsesLocalTokenUsageTelemetry() throws {
+        let root = try makeTemporarySlockRoot()
+        let traces = root.appendingPathComponent("machines/machine-a/traces")
+        try FileManager.default.createDirectory(at: traces, withIntermediateDirectories: true)
+        try """
+        {"name":"daemon.runtime.telemetry.token_usage","start_time":"2026-06-07T01:00:00.000Z","attrs":{"agentId":"agent-a","runtime":"claude","model":"sonnet","totalCostUsd":0.12,"inputTokens":100,"outputTokens":20,"cachedInputTokens":10,"cacheCreationInputTokens":5,"totalTokens":135}}
+        {"name":"daemon.runtime.telemetry.token_usage","start_time":"2026-06-07T01:03:00.000Z","attrs":{"agentId":"agent-a","runtime":"claude","model":"opus","modelUsageModels":"opus,sonnet","modelUsageCostUsd":0.2,"modelUsageInputTokens":300,"modelUsageOutputTokens":80,"modelUsageCachedInputTokens":30,"modelUsageCacheCreationInputTokens":10,"totalTokens":420}}
+        {"name":"daemon.runtime.telemetry.token_usage","start_time":"2026-06-07T01:05:00.000Z","attrs":{"agentId":"agent-b","runtime":"codex","model":"gpt-5","inputTokens":10,"outputTokens":5,"totalTokens":15}}
+        {"name":"daemon.agent.start.requested","attrs":{"agentId":"agent-a"}}
+        """.write(to: traces.appendingPathComponent("usage.jsonl"), atomically: true, encoding: .utf8)
+
+        let summaries = SlockCostService().summaries(rootURL: root)
+        let agentA = try expectUnwrapped(summaries.first { $0.agentID == "agent-a" }, "agent-a summary should be present")
+        let agentB = try expectUnwrapped(summaries.first { $0.agentID == "agent-b" }, "agent-b summary should be present")
+
+        try expect(agentA.eventCount == 2, "agent-a should aggregate two usage events")
+        try expect(abs(agentA.totalCostUSD - 0.32) < 0.0001, "agent-a cost should combine total and model usage cost")
+        try expect(agentA.inputTokens == 400, "agent-a input tokens should aggregate direct and model usage")
+        try expect(agentA.outputTokens == 100, "agent-a output tokens should aggregate direct and model usage")
+        try expect(agentA.cachedInputTokens == 40, "agent-a cached input tokens should aggregate")
+        try expect(agentA.cacheCreationInputTokens == 15, "agent-a cache creation tokens should aggregate")
+        try expect(agentA.totalTokens == 555, "agent-a total tokens should aggregate")
+        try expect(agentA.modelNames == ["opus", "sonnet"], "agent-a model names should be deduplicated and sorted")
+        let expectedLatestUsage = ISO8601DateFormatter()
+        expectedLatestUsage.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        try expect(agentA.lastUsageAt == expectedLatestUsage.date(from: "2026-06-07T01:03:00.000Z"), "agent-a should keep latest usage time")
+        try expect(agentB.totalCostUSD == 0, "missing cost should be treated as zero, not guessed")
+        try expect(agentB.inputTokens == 10, "agent-b input tokens should parse")
+    }
+
     private static func discoveryResolvesNestedSlockPaths() throws {
         let root = try makeTemporarySlockRoot()
         let agent = root.appendingPathComponent("agents/agent-workspace")
@@ -262,7 +294,11 @@ enum StatusMenusCoreChecks {
         let root = try makeTemporarySlockRoot()
         try FileManager.default.createDirectory(at: root.appendingPathComponent("agents/agent-a"), withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: root.appendingPathComponent("agents/agent-b"), withIntermediateDirectories: true)
-        try FileManager.default.createDirectory(at: root.appendingPathComponent("machines/machine-a/traces"), withIntermediateDirectories: true)
+        let traces = root.appendingPathComponent("machines/machine-a/traces")
+        try FileManager.default.createDirectory(at: traces, withIntermediateDirectories: true)
+        try """
+        {"name":"daemon.runtime.telemetry.token_usage","start_time":"2026-06-07T01:00:00.000Z","attrs":{"agentId":"agent-a","runtime":"claude","model":"sonnet","totalCostUsd":0.42,"inputTokens":100,"outputTokens":20,"totalTokens":120}}
+        """.write(to: traces.appendingPathComponent("usage.jsonl"), atomically: true, encoding: .utf8)
         let slockOutput = """
         PID ELAPSED %CPU %MEM COMMAND
         42 00:10 1.5 0.4 /usr/local/bin/node /tmp/@slock-ai/daemon --token secret
@@ -274,12 +310,15 @@ enum StatusMenusCoreChecks {
         102 00:30 1.0 5.0 /usr/local/bin/memoryhog
         """
         let usage = UsageService(shell: Shell { _ in usageOutput }).snapshot()
+        let costs = SlockCostService().summaries(rootURL: root)
 
-        let summary = MenuBarStatusSummary(slock: slock, usage: usage)
+        let summary = MenuBarStatusSummary(slock: slock, usage: usage, slockCosts: costs)
 
         try expect(summary.buttonTitle == "AgentDock 2A", "button title should include compact agent count")
         try expect(summary.menuLines.contains("Agents: 2"), "menu should include agent count")
         try expect(summary.menuLines.contains("Agent names: agent-a, agent-b"), "menu should include agent display names")
+        try expect(summary.menuLines.contains("LLM cost: $0.4200"), "menu should include Slock LLM cost")
+        try expect(summary.menuLines.contains("LLM events: 1"), "menu should include Slock LLM usage events")
         try expect(summary.menuLines.contains("Agent CPU: 1.5%"), "menu should include Slock agent CPU")
         try expect(summary.menuLines.contains("Agent MEM: 0.4%"), "menu should include Slock agent memory")
         try expect(summary.menuLines.contains("Top CPU: heavy 9.0%"), "menu should include top CPU process")
@@ -442,6 +481,41 @@ enum StatusMenusCoreChecks {
         try expect(restored.rankedNodes.contains { $0.url.path.contains("Library/Caches") }, "restored index should keep ranked nodes")
         try expect(restored.cleanupCandidates.contains { $0.url.path.contains("Library/Caches") && $0.risk == .safe }, "restored index should keep cleanup candidates")
         try expect(restored.scanDuration == analysis.scanDuration, "restored index should keep scan duration")
+    }
+
+    @MainActor
+    private static func monitorStoresKeepIndependentState() async throws {
+        let root = try makeTemporaryDirectory()
+        let scanRoot = root.appendingPathComponent("scan-root")
+        let cache = scanRoot.appendingPathComponent("Library/Caches/demo")
+        try FileManager.default.createDirectory(at: cache, withIntermediateDirectories: true)
+        try writeBytes(32_000, to: cache.appendingPathComponent("blob.cache"))
+
+        let storageDatabaseURL = root.appendingPathComponent("storage-index.sqlite")
+        let storageStore = StorageMonitorStore(makeIndexStore: { try StorageIndexStore(databaseURL: storageDatabaseURL) })
+        storageStore.rootPath = scanRoot.path
+        storageStore.customDepth = 4
+        await storageStore.scan()
+
+        try expect(storageStore.analysis.root.url.standardizedFileURL == scanRoot.standardizedFileURL, "storage store should keep scanned root")
+        try expect(!storageStore.analysis.rankedNodes.isEmpty, "storage store should keep ranked nodes")
+
+        let slockRoot = try makeTemporarySlockRoot()
+        try FileManager.default.createDirectory(at: slockRoot.appendingPathComponent("agents/agent-a"), withIntermediateDirectories: true)
+        let slockStore = SlockMonitorStore(discoveryService: SlockDiscoveryService(shell: Shell { _ in "" }))
+        await slockStore.refreshNow(rootPath: slockRoot.path)
+
+        let usageOutput = """
+        PID ELAPSED %CPU %MEM COMMAND
+        200 00:05 7.5 0.7 /usr/bin/demo
+        """
+        let usageStore = UsageMonitorStore(usageService: UsageService(shell: Shell { _ in usageOutput }))
+        await usageStore.refreshNow()
+
+        try expect(slockStore.snapshot?.agents.map(\.id) == ["agent-a"], "slock store should refresh independently")
+        try expect(usageStore.snapshot?.topCPUProcesses.first?.displayName == "demo", "usage store should refresh independently")
+        try expect(storageStore.analysis.root.url.standardizedFileURL == scanRoot.standardizedFileURL, "storage results should survive other store refreshes")
+        try expect(storageStore.isScanning == false, "storage scan should be finished")
     }
 
     private static func slockMetricSampleSummarizesSnapshotAndCapsHistory() throws {

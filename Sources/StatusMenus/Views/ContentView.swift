@@ -3,6 +3,9 @@ import SwiftUI
 
 struct ContentView: View {
     @EnvironmentObject private var moduleStore: ModuleStore
+    @EnvironmentObject private var storageStore: StorageMonitorStore
+    @EnvironmentObject private var slockStore: SlockMonitorStore
+    @EnvironmentObject private var usageStore: UsageMonitorStore
     @State private var selectedModule: ModuleID? = .storage
 
     var body: some View {
@@ -26,6 +29,9 @@ struct ContentView: View {
                 .help("Open Settings")
             }
         }
+        .task(id: monitorConfigurationID) {
+            await configureMonitorStores()
+        }
     }
 
     private var selectedModuleID: ModuleID {
@@ -33,6 +39,20 @@ struct ContentView: View {
             return selectedModule
         }
         return .modules
+    }
+
+    private var monitorConfigurationID: String {
+        "\(moduleStore.slockRootPath)|\(moduleStore.effectiveRefreshInterval)"
+    }
+
+    @MainActor
+    private func configureMonitorStores() async {
+        await storageStore.loadLatestStorageIndexIfNeeded()
+        slockStore.startRefreshLoop(
+            rootPath: moduleStore.slockRootPath,
+            refreshInterval: moduleStore.effectiveRefreshInterval
+        )
+        usageStore.startRefreshLoop(refreshInterval: moduleStore.effectiveRefreshInterval)
     }
 
     @ViewBuilder

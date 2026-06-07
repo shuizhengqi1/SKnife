@@ -2,9 +2,10 @@ import StatusMenusCore
 import SwiftUI
 
 struct UsageMonitorView: View {
-    @EnvironmentObject private var moduleStore: ModuleStore
-    @State private var snapshot: UsageSnapshot?
-    @State private var isRefreshing = false
+    @EnvironmentObject private var usageStore: UsageMonitorStore
+
+    private var snapshot: UsageSnapshot? { usageStore.snapshot }
+    private var isRefreshing: Bool { usageStore.isRefreshing }
 
     var body: some View {
         ScrollView {
@@ -64,9 +65,6 @@ struct UsageMonitorView: View {
             }
             .padding(24)
         }
-        .task(id: moduleStore.effectiveRefreshInterval) {
-            await refreshLoop()
-        }
     }
 
     private func processTable(title: String, processes: [ProcessSample], value: @escaping (ProcessSample) -> String) -> some View {
@@ -95,38 +93,7 @@ struct UsageMonitorView: View {
 
     private func refresh() {
         Task {
-            await refreshNow()
+            await usageStore.refreshNow()
         }
-    }
-
-    @MainActor
-    private func refreshLoop() async {
-        while !Task.isCancelled {
-            await refreshNow()
-
-            do {
-                try await Task.sleep(nanoseconds: refreshNanoseconds)
-            } catch {
-                break
-            }
-        }
-    }
-
-    @MainActor
-    private func refreshNow() async {
-        guard !isRefreshing else {
-            return
-        }
-
-        isRefreshing = true
-        let nextSnapshot = await Task.detached(priority: .utility) {
-            UsageService().snapshot()
-        }.value
-        snapshot = nextSnapshot
-        isRefreshing = false
-    }
-
-    private var refreshNanoseconds: UInt64 {
-        UInt64(moduleStore.effectiveRefreshInterval * 1_000_000_000)
     }
 }

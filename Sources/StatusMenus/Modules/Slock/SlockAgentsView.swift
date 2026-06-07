@@ -4,13 +4,16 @@ import SwiftUI
 
 struct SlockAgentsView: View {
     @EnvironmentObject private var moduleStore: ModuleStore
-    @State private var snapshot: SlockSnapshot?
-    @State private var errorMessage: String?
-    @State private var isRefreshing = false
+    @EnvironmentObject private var slockStore: SlockMonitorStore
     @State private var editingAgent: EditableSlockAgent?
     @State private var saveErrorMessage: String?
     @State private var isSavingMemory = false
-    @State private var metricHistory: [SlockMetricSample] = []
+
+    private var snapshot: SlockSnapshot? { slockStore.snapshot }
+    private var errorMessage: String? { slockStore.errorMessage }
+    private var isRefreshing: Bool { slockStore.isRefreshing }
+    private var metricHistory: [SlockMetricSample] { slockStore.metricHistory }
+    private var costSummaries: [SlockAgentCostSummary] { slockStore.costSummaries }
 
     var body: some View {
         ScrollView {
@@ -45,6 +48,7 @@ struct SlockAgentsView: View {
                         MetricTile(title: "Agents", value: "\(snapshot.agents.count)", subtitle: "Workspaces", symbolName: "folder")
                         MetricTile(title: "Machines", value: "\(snapshot.machines.count)", subtitle: "Local machine records", symbolName: "desktopcomputer")
                         MetricTile(title: "Processes", value: "\(snapshot.processes.count)", subtitle: "Command redacted", symbolName: "cpu")
+                        MetricTile(title: "LLM Cost", value: costUSD(totalLLMCost), subtitle: "\(totalUsageEvents) local token events", symbolName: "dollarsign.circle")
                     }
 
                     if let errorMessage {
@@ -55,6 +59,7 @@ struct SlockAgentsView: View {
                     }
 
                     metricHistorySection
+                    costTelemetrySection
                     agentSection(snapshot.agents)
                     machineSection(snapshot.machines)
                     processSection(snapshot.processes)
@@ -77,9 +82,6 @@ struct SlockAgentsView: View {
             }
             .padding(24)
         }
-        .task(id: refreshLoopID) {
-            await refreshLoop()
-        }
         .sheet(item: $editingAgent) { draft in
             SlockMemoryEditorSheet(
                 initialDraft: draft,
@@ -94,10 +96,6 @@ struct SlockAgentsView: View {
                 }
             )
         }
-    }
-
-    private var refreshLoopID: String {
-        "\(moduleStore.slockRootPath)|\(moduleStore.effectiveRefreshInterval)"
     }
 
     @ViewBuilder
@@ -133,6 +131,7 @@ struct SlockAgentsView: View {
                                     .foregroundStyle(.secondary)
                                     .lineLimit(1)
                                     .truncationMode(.middle)
+                                agentCostLine(for: agent)
                             }
                             Spacer()
                             Text(StatusFormatters.bytes(agent.byteCount))
@@ -188,6 +187,28 @@ struct SlockAgentsView: View {
                     Divider()
                 }
             }
+        }
+    }
+
+    @ViewBuilder
+    private func agentCostLine(for agent: SlockAgentWorkspace) -> some View {
+        if let summary = costSummary(for: agent) {
+            HStack(spacing: 8) {
+                Label(costUSD(summary.totalCostUSD), systemImage: "dollarsign.circle")
+                Text("\(tokenCount(summary.totalTokens)) tokens")
+                Text("\(summary.eventCount) events")
+                if !summary.modelNames.isEmpty {
+                    Text(summary.modelNames.joined(separator: ", "))
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                }
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
+        } else {
+            Text("No local LLM cost telemetry")
+                .font(.caption)
+                .foregroundStyle(.secondary)
         }
     }
 
@@ -257,7 +278,7 @@ struct SlockAgentsView: View {
 
     private func refresh() {
         Task {
-            await refreshNow()
+            await slockStore.refreshNow(rootPath: moduleStore.slockRootPath)
         }
     }
 
@@ -282,66 +303,95 @@ struct SlockAgentsView: View {
         let agentURL = draft.url
         let memoryDraft = draft.memoryDraft
         do {
-            try await Task.detached(priority: .utility) {
-                try SlockDiscoveryService().saveMemoryDraft(agentURL: agentURL, draft: memoryDraft)
-            }.value
+            try await slockStore.saveMemoryDraft(agentURL: agentURL, draft: memoryDraft)
             editingAgent = nil
-            errorMessage = nil
-            await refreshNow()
+            saveErrorMessage = nil
         } catch {
             let message = "Could not save MEMORY.md: \(error.localizedDescription)"
             saveErrorMessage = message
-            errorMessage = message
+            slockStore.errorMessage = message
         }
-    }
-
-    @MainActor
-    private func refreshLoop() async {
-        metricHistory.removeAll()
-        while !Task.isCancelled {
-            await refreshNow()
-
-            do {
-                try await Task.sleep(nanoseconds: refreshNanoseconds)
-            } catch {
-                break
-            }
-        }
-    }
-
-    @MainActor
-    private func refreshNow() async {
-        guard !isRefreshing else {
-            return
-        }
-
-        let root = URL(fileURLWithPath: NSString(string: moduleStore.slockRootPath).expandingTildeInPath)
-        isRefreshing = true
-        do {
-            let nextSnapshot = try await Task.detached(priority: .utility) {
-                try SlockDiscoveryService().liveSnapshot(rootURL: root)
-            }.value
-            snapshot = nextSnapshot
-            metricHistory = SlockMetricSample.appending(
-                SlockMetricSample(snapshot: nextSnapshot),
-                to: metricHistory,
-                limit: 60
-            )
-            errorMessage = nil
-        } catch {
-            snapshot = nil
-            errorMessage = error.localizedDescription
-        }
-        isRefreshing = false
-    }
-
-    private var refreshNanoseconds: UInt64 {
-        UInt64(moduleStore.effectiveRefreshInterval * 1_000_000_000)
     }
 
     private func copy(_ value: String) {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(value, forType: .string)
+    }
+
+    private var costTelemetrySection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Text("LLM cost telemetry")
+                    .font(.headline)
+                Spacer()
+                Text("\(costSummaries.count) agents · \(totalUsageEvents) events")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 170), spacing: 12)], spacing: 12) {
+                MetricTile(title: "Total Cost", value: costUSD(totalLLMCost), subtitle: "Slock-reported USD", symbolName: "dollarsign.circle")
+                MetricTile(title: "Usage Events", value: "\(totalUsageEvents)", subtitle: "Token snapshots", symbolName: "bolt.horizontal.circle")
+                MetricTile(title: "Input Tokens", value: tokenCount(totalInputTokens), subtitle: "Prompt + model input", symbolName: "arrow.down.circle")
+                MetricTile(title: "Output Tokens", value: tokenCount(totalOutputTokens), subtitle: "Completion output", symbolName: "arrow.up.circle")
+            }
+
+            if costSummaries.isEmpty {
+                EmptyStateView(
+                    title: "No local LLM cost telemetry",
+                    message: "Slock agent folders are visible, but the local daemon traces have not emitted token usage or cost events yet.",
+                    symbolName: "waveform.path.ecg"
+                )
+                .frame(minHeight: 120)
+            } else {
+                VStack(spacing: 8) {
+                    ForEach(costSummaries) { summary in
+                        costSummaryRow(summary)
+                        Divider()
+                    }
+                }
+            }
+        }
+        .padding(14)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+    }
+
+    private func costSummaryRow(_ summary: SlockAgentCostSummary) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            SymbolIcon(symbolName: "dollarsign.circle", size: 18)
+                .foregroundStyle(.green)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(agentName(for: summary.agentID))
+                    .font(.subheadline.weight(.semibold))
+                Text(summary.agentID)
+                    .font(.caption.monospaced())
+                    .foregroundStyle(.secondary)
+                HStack(spacing: 10) {
+                    Text("\(tokenCount(summary.inputTokens)) in")
+                    Text("\(tokenCount(summary.outputTokens)) out")
+                    Text("\(tokenCount(summary.cachedInputTokens)) cached")
+                    Text("\(summary.eventCount) events")
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                if !summary.modelNames.isEmpty {
+                    Text(summary.modelNames.joined(separator: ", "))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                }
+            }
+            Spacer()
+            VStack(alignment: .trailing, spacing: 4) {
+                Text(costUSD(summary.totalCostUSD))
+                    .font(.title3.weight(.semibold).monospacedDigit())
+                Text(StatusFormatters.shortDateTime(summary.lastUsageAt))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(.vertical, 6)
     }
 
     private var metricHistorySection: some View {
@@ -418,6 +468,41 @@ struct SlockAgentsView: View {
 
     private var latest: SlockMetricSample? {
         metricHistory.last
+    }
+
+    private var totalLLMCost: Double {
+        costSummaries.reduce(0) { $0 + $1.totalCostUSD }
+    }
+
+    private var totalUsageEvents: Int {
+        costSummaries.reduce(0) { $0 + $1.eventCount }
+    }
+
+    private var totalInputTokens: Int {
+        costSummaries.reduce(0) { $0 + $1.inputTokens }
+    }
+
+    private var totalOutputTokens: Int {
+        costSummaries.reduce(0) { $0 + $1.outputTokens }
+    }
+
+    private func costSummary(for agent: SlockAgentWorkspace) -> SlockAgentCostSummary? {
+        costSummaries.first { $0.agentID == agent.id }
+    }
+
+    private func agentName(for agentID: String) -> String {
+        snapshot?.agents.first { $0.id == agentID }?.displayName ?? agentID
+    }
+
+    private func costUSD(_ value: Double) -> String {
+        if abs(value) < 0.0001 {
+            return "$0.00"
+        }
+        return value >= 100 ? String(format: "$%.2f", value) : String(format: "$%.4f", value)
+    }
+
+    private func tokenCount(_ value: Int) -> String {
+        NumberFormatter.localizedString(from: NSNumber(value: value), number: .decimal)
     }
 
     private func slockMetricCard(

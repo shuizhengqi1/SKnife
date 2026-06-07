@@ -3,20 +3,19 @@ import StatusMenusCore
 import SwiftUI
 
 struct StorageView: View {
-    @State private var analysis = StorageAnalysis.empty
-    @State private var isScanning = false
-    @State private var scanProgress: StorageScanProgress?
-    @State private var rootPath = FileManager.default.homeDirectoryForCurrentUser.path
-    @State private var scanMode: StorageScanMode = .balanced
-    @State private var showAdvanced = false
-    @State private var customDepth = StorageScanMode.balanced.maxDepth
-    @State private var selectedNode: StorageNode?
-    @State private var selectedCandidateIDs: Set<String> = []
-    @State private var cleanupMessage: String?
-    @State private var indexMessage: String?
-    @State private var hasLoadedLocalIndex = false
+    @EnvironmentObject private var storageStore: StorageMonitorStore
 
     private let panelStroke = Color.secondary.opacity(0.18)
+
+    private var analysis: StorageAnalysis { storageStore.analysis }
+    private var isScanning: Bool { storageStore.isScanning }
+    private var scanProgress: StorageScanProgress? { storageStore.scanProgress }
+    private var rootPath: String { storageStore.rootPath }
+    private var scanMode: StorageScanMode { storageStore.scanMode }
+    private var selectedNode: StorageNode? { storageStore.selectedNode }
+    private var selectedCandidateIDs: Set<String> { storageStore.selectedCandidateIDs }
+    private var cleanupMessage: String? { storageStore.cleanupMessage }
+    private var indexMessage: String? { storageStore.indexMessage }
 
     var body: some View {
         ScrollView {
@@ -33,17 +32,14 @@ struct StorageView: View {
             }
             .padding(24)
         }
-        .task {
-            await loadLatestStorageIndexIfNeeded()
-        }
     }
 
     private var scanControls: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 10) {
-                TextField("Scan path", text: $rootPath)
+                TextField("Scan path", text: $storageStore.rootPath)
                     .textFieldStyle(.roundedBorder)
-                Picker("Scan mode", selection: $scanMode) {
+                Picker("Scan mode", selection: $storageStore.scanMode) {
                     ForEach(StorageScanMode.allCases) { mode in
                         Text(mode.label).tag(mode)
                     }
@@ -76,8 +72,8 @@ struct StorageView: View {
 
             scanStatus
 
-            DisclosureGroup(isExpanded: $showAdvanced) {
-                Stepper("Custom scan reach \(customDepth)", value: $customDepth, in: 1...8)
+            DisclosureGroup(isExpanded: $storageStore.showAdvanced) {
+                Stepper("Custom scan reach \(storageStore.customDepth)", value: $storageStore.customDepth, in: 1...8)
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .padding(.top, 4)
@@ -151,7 +147,7 @@ struct StorageView: View {
                 nodes: Array(analysis.rankedNodes.prefix(14)),
                 selectedNodeID: selectedNode?.id
             ) { node in
-                selectedNode = node
+                storageStore.selectedNode = node
             }
             .frame(height: 300)
 
@@ -183,7 +179,7 @@ struct StorageView: View {
 
                 ForEach(Array(analysis.root.children.prefix(8))) { node in
                     Button {
-                        selectedNode = node
+                        storageStore.selectedNode = node
                     } label: {
                         HStack {
                             VStack(alignment: .leading, spacing: 2) {
@@ -393,7 +389,7 @@ struct StorageView: View {
                     }
                     .contentShape(Rectangle())
                     .onTapGesture {
-                        selectedNode = node
+                        storageStore.selectedNode = node
                     }
                     .padding(.vertical, 6)
                     Divider()
@@ -407,15 +403,15 @@ struct StorageView: View {
     }
 
     private var selectedCleanupCandidates: [StorageCleanupCandidate] {
-        analysis.cleanupCandidates.filter { selectedCandidateIDs.contains($0.id) }
+        storageStore.selectedCleanupCandidates
     }
 
     private var selectedCleanupBytes: Int64 {
-        selectedCleanupCandidates.reduce(0) { $0 + $1.byteCount }
+        storageStore.selectedCleanupBytes
     }
 
     private var effectiveScanDepth: Int {
-        showAdvanced ? customDepth : scanMode.maxDepth
+        storageStore.effectiveScanDepth
     }
 
     private var metricColumns: [GridItem] {
@@ -543,7 +539,7 @@ struct StorageView: View {
 
     private func quickPathButton(_ title: String, _ url: URL) -> some View {
         Button(title) {
-            rootPath = url.path
+            storageStore.rootPath = url.path
         }
         .buttonStyle(.bordered)
         .controlSize(.small)
@@ -551,127 +547,22 @@ struct StorageView: View {
 
     private func candidateBinding(_ candidate: StorageCleanupCandidate) -> Binding<Bool> {
         Binding {
-            selectedCandidateIDs.contains(candidate.id)
+            storageStore.selectedCandidateIDs.contains(candidate.id)
         } set: { isSelected in
-            if isSelected {
-                selectedCandidateIDs.insert(candidate.id)
-            } else {
-                selectedCandidateIDs.remove(candidate.id)
-            }
+            storageStore.setCandidateSelected(candidate, isSelected: isSelected)
         }
     }
 
     private func scan(clearCleanupMessage: Bool = true) {
-        guard !isScanning else {
-            return
-        }
-
-        isScanning = true
-        scanProgress = StorageScanProgress(
-            phase: .preparing,
-            processedItemCount: 0,
-            totalItemCount: nil,
-            currentPath: rootPath,
-            elapsedSeconds: 0
-        )
-        indexMessage = nil
-        if clearCleanupMessage {
-            cleanupMessage = nil
-        }
-        let url = URL(fileURLWithPath: NSString(string: rootPath).expandingTildeInPath)
-        let depth = effectiveScanDepth
-        let progressHandler: @Sendable (StorageScanProgress) -> Void = { progress in
-            Task { @MainActor in
-                scanProgress = progress
-            }
-        }
         Task {
-            let result = await Task.detached(priority: .utility) { () -> (StorageAnalysis, String?) in
-                let nextAnalysis = StorageService().analysis(
-                    rootURL: url,
-                    maxDepth: depth,
-                    includeHidden: false,
-                    includeDiskCapacity: true,
-                    progress: progressHandler
-                )
-                progressHandler(
-                    StorageScanProgress(
-                        phase: .indexing,
-                        processedItemCount: 0,
-                        totalItemCount: nil,
-                        currentPath: StorageIndexStore.defaultDatabaseURL.path,
-                        elapsedSeconds: nextAnalysis.scanDuration
-                    )
-                )
-                do {
-                    try StorageIndexStore().save(nextAnalysis)
-                    progressHandler(
-                        StorageScanProgress(
-                            phase: .finished,
-                            processedItemCount: 1,
-                            totalItemCount: 1,
-                            currentPath: nextAnalysis.root.url.path,
-                            elapsedSeconds: nextAnalysis.scanDuration
-                        )
-                    )
-                    return (nextAnalysis, nil)
-                } catch {
-                    return (nextAnalysis, error.localizedDescription)
-                }
-            }.value
-            applyAnalysis(result.0, updateRootPath: true)
-            if let indexError = result.1 {
-                indexMessage = "Scan complete, but local index was not saved: \(indexError)"
-            } else {
-                indexMessage = "Saved local index at \(StatusFormatters.shortDateTime(result.0.scanFinishedAt))"
-            }
-            isScanning = false
+            await storageStore.scan(clearCleanupMessage: clearCleanupMessage)
         }
     }
 
     private func moveSelectedCandidatesToTrash() {
-        let candidates = selectedCleanupCandidates
-        guard !candidates.isEmpty else {
-            return
-        }
-
-        isScanning = true
         Task {
-            let results = await Task.detached(priority: .utility) {
-                StorageService().moveToTrash(candidates)
-            }.value
-            let succeeded = results.filter(\.succeeded).count
-            cleanupMessage = "\(succeeded) of \(results.count) items moved to Trash."
-            isScanning = false
-            scan(clearCleanupMessage: false)
+            await storageStore.moveSelectedCandidatesToTrash()
         }
-    }
-
-    @MainActor
-    private func loadLatestStorageIndexIfNeeded() async {
-        guard !hasLoadedLocalIndex else {
-            return
-        }
-        hasLoadedLocalIndex = true
-
-        let restoredAnalysis = await Task.detached(priority: .utility) {
-            try? StorageIndexStore().latestAnalysis()
-        }.value
-        guard let restoredAnalysis, analysis == .empty, !isScanning else {
-            return
-        }
-
-        applyAnalysis(restoredAnalysis, updateRootPath: true)
-        indexMessage = "Loaded local index from \(StatusFormatters.shortDateTime(restoredAnalysis.scanFinishedAt))"
-    }
-
-    private func applyAnalysis(_ nextAnalysis: StorageAnalysis, updateRootPath: Bool) {
-        analysis = nextAnalysis
-        if updateRootPath {
-            rootPath = nextAnalysis.root.url.path
-        }
-        selectedNode = nextAnalysis.rankedNodes.first
-        selectedCandidateIDs = Set(nextAnalysis.cleanupCandidates.filter { $0.risk == .safe }.map(\.id))
     }
 
     private func revealSelectedCleanup() {

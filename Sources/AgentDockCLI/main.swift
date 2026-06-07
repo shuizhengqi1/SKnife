@@ -43,9 +43,10 @@ enum AgentDockCLI {
         let root = slockRoot(from: arguments)
         let processOutput = (try? Shell.live.run(["/bin/ps", "-axo", "pid,etime,pcpu,pmem,command"])) ?? ""
         let slock = try? SlockDiscoveryService().snapshot(rootURL: root, processOutput: processOutput)
+        let slockCosts = slock.map { SlockCostService().summaries(rootURL: $0.rootURL) } ?? []
         let usage = UsageService().snapshot(processOutput: processOutput)
         let storage = StorageService().snapshot(includeFolderSizes: false, includeDiskCapacity: true)
-        let summary = MenuBarStatusSummary(slock: slock, usage: usage)
+        let summary = MenuBarStatusSummary(slock: slock, usage: usage, slockCosts: slockCosts)
 
         if arguments.contains("--json") {
             let storagePayload: [String: Any] = [
@@ -56,7 +57,11 @@ enum AgentDockCLI {
             let slockPayload: [String: Any] = [
                 "status": slock?.status.label ?? "Unavailable",
                 "agentCount": slock?.agents.count ?? 0,
-                "processCount": slock?.processes.count ?? 0
+                "processCount": slock?.processes.count ?? 0,
+                "llmCostUSD": slockCosts.reduce(0) { $0 + $1.totalCostUSD },
+                "llmUsageEvents": slockCosts.reduce(0) { $0 + $1.eventCount },
+                "llmTotalTokens": slockCosts.reduce(0) { $0 + $1.totalTokens },
+                "llmCosts": slockCosts.map(costDictionary)
             ]
             let usagePayload: [String: Any] = [
                 "topCPU": usage.topCPUProcesses.first.map(processDictionary) ?? NSNull(),
@@ -253,6 +258,17 @@ enum AgentDockCLI {
                 )
             )
             print("Updated description for \(agent.id)")
+        case "costs":
+            let costs = SlockCostService().summaries(rootURL: snapshot.rootURL)
+            if rest.contains("--json") {
+                try printJSON(costs.map(costDictionary))
+            } else if costs.isEmpty {
+                print("No local LLM cost telemetry found")
+            } else {
+                for summary in costs {
+                    print("\(summary.agentID)\t\(costUSD(summary.totalCostUSD))\t\(summary.eventCount) events\t\(tokenCount(summary.totalTokens)) tokens")
+                }
+            }
         default:
             throw CLIError.message("unknown slock subcommand \(subcommand)")
         }
@@ -449,6 +465,21 @@ enum AgentDockCLI {
         ]
     }
 
+    private static func costDictionary(_ summary: SlockAgentCostSummary) -> [String: Any] {
+        [
+            "agentID": summary.agentID,
+            "totalCostUSD": summary.totalCostUSD,
+            "inputTokens": summary.inputTokens,
+            "outputTokens": summary.outputTokens,
+            "cachedInputTokens": summary.cachedInputTokens,
+            "cacheCreationInputTokens": summary.cacheCreationInputTokens,
+            "totalTokens": summary.totalTokens,
+            "models": summary.modelNames,
+            "eventCount": summary.eventCount,
+            "lastUsageAt": dateDictionaryValue(summary.lastUsageAt)
+        ]
+    }
+
     private static func processDictionary(_ process: ProcessSample) -> [String: Any] {
         [
             "pid": process.pid,
@@ -457,6 +488,17 @@ enum AgentDockCLI {
             "memoryPercent": process.memoryPercent,
             "elapsed": process.elapsed
         ]
+    }
+
+    private static func costUSD(_ value: Double) -> String {
+        if abs(value) < 0.0001 {
+            return "$0.00"
+        }
+        return value >= 100 ? String(format: "$%.2f", value) : String(format: "$%.4f", value)
+    }
+
+    private static func tokenCount(_ value: Int) -> String {
+        NumberFormatter.localizedString(from: NSNumber(value: value), number: .decimal)
     }
 
     private static let usage = """
@@ -471,6 +513,7 @@ enum AgentDockCLI {
       agentdock slock list [--root ~/.slock] [--json]
       agentdock slock show <agent-id> [--root ~/.slock] [--json]
       agentdock slock set-description <agent-id> <text> [--root ~/.slock]
+      agentdock slock costs [--root ~/.slock] [--json]
       agentdock modules list [--json]
       agentdock app open
 

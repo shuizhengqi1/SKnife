@@ -12,6 +12,9 @@ final class StatusMenusApplication: NSObject, NSApplicationDelegate {
     private static var retainedDelegate: StatusMenusApplication?
 
     private let moduleStore = ModuleStore()
+    private let storageStore = StorageMonitorStore()
+    private let slockStore = SlockMonitorStore()
+    private let usageStore = UsageMonitorStore()
     private var mainWindow: NSWindow?
     private var settingsWindow: NSWindow?
     private var statusItem: NSStatusItem?
@@ -82,6 +85,9 @@ final class StatusMenusApplication: NSObject, NSApplicationDelegate {
         if mainWindow == nil {
             let view = ContentView()
                 .environmentObject(moduleStore)
+                .environmentObject(storageStore)
+                .environmentObject(slockStore)
+                .environmentObject(usageStore)
                 .frame(minWidth: 1040, minHeight: 660)
             let window = NSWindow(
                 contentRect: NSRect(x: 0, y: 0, width: 1240, height: 760),
@@ -251,8 +257,9 @@ final class StatusMenusApplication: NSObject, NSApplicationDelegate {
         let summary = await Task.detached(priority: .utility) {
             let processOutput = (try? Shell.live.run(["/bin/ps", "-axo", "pid,etime,pcpu,pmem,command"])) ?? ""
             let slock = try? SlockDiscoveryService().snapshot(rootURL: root, processOutput: processOutput)
+            let slockCosts = slock.map { SlockCostService().summaries(rootURL: $0.rootURL) } ?? []
             let usage = UsageService().snapshot(processOutput: processOutput)
-            return MenuBarStatusSummary(slock: slock, usage: usage)
+            return MenuBarStatusSummary(slock: slock, usage: usage, slockCosts: slockCosts)
         }.value
 
         guard !Task.isCancelled else {
