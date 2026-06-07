@@ -21,6 +21,7 @@ if [[ ! -d "$APP_BUNDLE" ]]; then
   exit 1
 fi
 
+/usr/bin/xattr -cr "$APP_BUNDLE" 2>/dev/null || true
 /usr/bin/codesign --force --deep --sign "$SIGN_IDENTITY" "$APP_BUNDLE"
 /usr/bin/codesign --verify --deep --strict --verbose=2 "$APP_BUNDLE"
 
