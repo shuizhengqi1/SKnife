@@ -55,6 +55,45 @@ public enum StorageScanMode: String, CaseIterable, Identifiable {
     }
 }
 
+public enum StorageScanProgressPhase: String, Equatable, Sendable {
+    case preparing
+    case scanning
+    case indexing
+    case finished
+}
+
+public struct StorageScanProgress: Equatable, Sendable {
+    public let phase: StorageScanProgressPhase
+    public let processedItemCount: Int
+    public let totalItemCount: Int?
+    public let currentPath: String?
+    public let elapsedSeconds: TimeInterval
+
+    public init(
+        phase: StorageScanProgressPhase,
+        processedItemCount: Int,
+        totalItemCount: Int?,
+        currentPath: String?,
+        elapsedSeconds: TimeInterval
+    ) {
+        self.phase = phase
+        self.processedItemCount = processedItemCount
+        self.totalItemCount = totalItemCount
+        self.currentPath = currentPath
+        self.elapsedSeconds = elapsedSeconds
+    }
+
+    public var percentComplete: Double? {
+        if phase == .finished {
+            return 1
+        }
+        guard let totalItemCount, totalItemCount > 0 else {
+            return nil
+        }
+        return min(1, max(0, Double(processedItemCount) / Double(totalItemCount)))
+    }
+}
+
 public struct FolderUsage: Identifiable, Equatable {
     public var id: String { url.path }
     public let title: String
@@ -102,6 +141,9 @@ public struct StorageAnalysis: Equatable {
     public let cleanupCandidates: [StorageCleanupCandidate]
     public let scanLog: [String]
     public let indexedFileCount: Int
+    public let scanStartedAt: Date?
+    public let scanFinishedAt: Date?
+    public let scanDuration: TimeInterval
 
     public static let empty = StorageAnalysis(
         disk: DiskSnapshot(capacity: 0, available: 0),
@@ -116,7 +158,10 @@ public struct StorageAnalysis: Equatable {
         rankedNodes: [],
         cleanupCandidates: [],
         scanLog: [],
-        indexedFileCount: 0
+        indexedFileCount: 0,
+        scanStartedAt: nil,
+        scanFinishedAt: nil,
+        scanDuration: 0
     )
 }
 
@@ -162,17 +207,43 @@ public struct StorageService {
         rootURL: URL = FileManager.default.homeDirectoryForCurrentUser,
         maxDepth: Int = 3,
         includeHidden: Bool = false,
-        includeDiskCapacity: Bool = true
+        includeDiskCapacity: Bool = true,
+        progress: ((StorageScanProgress) -> Void)? = nil
     ) -> StorageAnalysis {
+        let startedAt = Date()
         let root = rootURL.standardizedFileURL
         let disk = includeDiskCapacity ? diskSnapshot(for: root) : DiskSnapshot(capacity: 0, available: 0)
+        var scanContext = StorageScanContext(startedAt: startedAt, progress: progress)
+        scanContext.emit(
+            phase: .preparing,
+            processedItemCount: 0,
+            totalItemCount: nil,
+            currentPath: root.path,
+            force: true
+        )
+        let resolvedMaxDepth = max(0, maxDepth)
+        let totalItemCount = countScanWorkUnits(
+            root,
+            depth: 0,
+            maxDepth: resolvedMaxDepth,
+            includeHidden: includeHidden
+        )
+        scanContext.emit(
+            phase: .scanning,
+            processedItemCount: 0,
+            totalItemCount: totalItemCount,
+            currentPath: root.path,
+            force: true
+        )
         var indexedFileCount = 0
         let rootNode = scanNode(
             root,
             depth: 0,
-            maxDepth: max(0, maxDepth),
+            maxDepth: resolvedMaxDepth,
             includeHidden: includeHidden,
-            indexedFileCount: &indexedFileCount
+            totalItemCount: totalItemCount,
+            indexedFileCount: &indexedFileCount,
+            context: &scanContext
         ) ?? StorageNode(
             title: root.lastPathComponent.isEmpty ? root.path : root.lastPathComponent,
             url: root,
@@ -190,11 +261,22 @@ public struct StorageService {
                 return $0.byteCount > $1.byteCount
             }
         let cleanupCandidates = rankedNodes.compactMap(cleanupCandidate)
+        let finishedAt = Date()
+        let duration = finishedAt.timeIntervalSince(startedAt)
         let scanLog = [
             "Scanned \(root.path)",
             "Indexed \(indexedFileCount) files",
-            "Found \(cleanupCandidates.count) cleanup candidates"
+            "Found \(cleanupCandidates.count) cleanup candidates",
+            "Scan time \(StatusFormatters.duration(duration))"
         ]
+        scanContext.emit(
+            phase: .finished,
+            processedItemCount: max(totalItemCount, scanContext.processedItemCount),
+            totalItemCount: totalItemCount,
+            currentPath: root.path,
+            force: true,
+            elapsedSeconds: duration
+        )
 
         return StorageAnalysis(
             disk: disk,
@@ -202,7 +284,10 @@ public struct StorageService {
             rankedNodes: rankedNodes,
             cleanupCandidates: cleanupCandidates,
             scanLog: scanLog,
-            indexedFileCount: indexedFileCount
+            indexedFileCount: indexedFileCount,
+            scanStartedAt: startedAt,
+            scanFinishedAt: finishedAt,
+            scanDuration: duration
         )
     }
 
@@ -258,7 +343,9 @@ public struct StorageService {
         depth: Int,
         maxDepth: Int,
         includeHidden: Bool,
-        indexedFileCount: inout Int
+        totalItemCount: Int,
+        indexedFileCount: inout Int,
+        context: inout StorageScanContext
     ) -> StorageNode? {
         guard fileManager.fileExists(atPath: url.path),
               let values = try? url.resourceValues(forKeys: [
@@ -275,6 +362,7 @@ public struct StorageService {
 
         let title = url.lastPathComponent.isEmpty ? url.path : url.lastPathComponent
         let isDirectory = values.isDirectory == true
+        context.recordScanned(url, totalItemCount: totalItemCount)
         guard isDirectory else {
             indexedFileCount += values.isRegularFile == true ? 1 : 0
             return StorageNode(
@@ -288,7 +376,12 @@ public struct StorageService {
         }
 
         guard depth < maxDepth else {
-            let summary = directorySummary(url, includeHidden: includeHidden)
+            let summary = directorySummary(
+                url,
+                includeHidden: includeHidden,
+                totalItemCount: totalItemCount,
+                context: &context
+            )
             indexedFileCount += summary.fileCount
             return StorageNode(
                 title: title,
@@ -304,7 +397,7 @@ public struct StorageService {
         if !includeHidden {
             options.insert(.skipsHiddenFiles)
         }
-        let children = ((try? fileManager.contentsOfDirectory(
+        let childURLs = (try? fileManager.contentsOfDirectory(
             at: url,
             includingPropertiesForKeys: [
                 .isDirectoryKey,
@@ -314,22 +407,28 @@ public struct StorageService {
                 .fileAllocatedSizeKey
             ],
             options: options
-        )) ?? [])
-            .compactMap {
-                scanNode(
-                    $0,
-                    depth: depth + 1,
-                    maxDepth: maxDepth,
-                    includeHidden: includeHidden,
-                    indexedFileCount: &indexedFileCount
-                )
+        )) ?? []
+
+        var children: [StorageNode] = []
+        for childURL in childURLs {
+            if let node = scanNode(
+                childURL,
+                depth: depth + 1,
+                maxDepth: maxDepth,
+                includeHidden: includeHidden,
+                totalItemCount: totalItemCount,
+                indexedFileCount: &indexedFileCount,
+                context: &context
+            ) {
+                children.append(node)
             }
-            .sorted {
-                if $0.byteCount == $1.byteCount {
-                    return $0.title.localizedStandardCompare($1.title) == .orderedAscending
-                }
-                return $0.byteCount > $1.byteCount
+        }
+        children.sort {
+            if $0.byteCount == $1.byteCount {
+                return $0.title.localizedStandardCompare($1.title) == .orderedAscending
             }
+            return $0.byteCount > $1.byteCount
+        }
 
         return StorageNode(
             title: title,
@@ -408,7 +507,10 @@ public struct StorageService {
         directorySummary(url, includeHidden: false).byteCount
     }
 
-    private func directorySummary(_ url: URL, includeHidden: Bool) -> (byteCount: Int64, fileCount: Int) {
+    private func directorySummary(
+        _ url: URL,
+        includeHidden: Bool
+    ) -> (byteCount: Int64, fileCount: Int) {
         var options: FileManager.DirectoryEnumerationOptions = [.skipsPackageDescendants]
         if !includeHidden {
             options.insert(.skipsHiddenFiles)
@@ -440,5 +542,157 @@ public struct StorageService {
             total += Int64(values.totalFileAllocatedSize ?? values.fileAllocatedSize ?? 0)
         }
         return (total, fileCount)
+    }
+
+    private func directorySummary(
+        _ url: URL,
+        includeHidden: Bool,
+        totalItemCount: Int,
+        context: inout StorageScanContext
+    ) -> (byteCount: Int64, fileCount: Int) {
+        var options: FileManager.DirectoryEnumerationOptions = [.skipsPackageDescendants]
+        if !includeHidden {
+            options.insert(.skipsHiddenFiles)
+        }
+
+        guard fileManager.fileExists(atPath: url.path),
+              let enumerator = fileManager.enumerator(
+                at: url,
+                includingPropertiesForKeys: [.totalFileAllocatedSizeKey, .fileAllocatedSizeKey, .isRegularFileKey],
+                options: options
+              )
+        else {
+            return (0, 0)
+        }
+
+        var total: Int64 = 0
+        var fileCount = 0
+        for case let fileURL as URL in enumerator {
+            context.recordScanned(fileURL, totalItemCount: totalItemCount)
+            guard let values = try? fileURL.resourceValues(forKeys: [
+                .totalFileAllocatedSizeKey,
+                .fileAllocatedSizeKey,
+                .isRegularFileKey
+            ]) else {
+                continue
+            }
+            if values.isRegularFile == true {
+                fileCount += 1
+            }
+            total += Int64(values.totalFileAllocatedSize ?? values.fileAllocatedSize ?? 0)
+        }
+        return (total, fileCount)
+    }
+
+    private func countScanWorkUnits(
+        _ url: URL,
+        depth: Int,
+        maxDepth: Int,
+        includeHidden: Bool
+    ) -> Int {
+        guard fileManager.fileExists(atPath: url.path),
+              let values = try? url.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey]),
+              values.isSymbolicLink != true
+        else {
+            return 0
+        }
+
+        guard values.isDirectory == true else {
+            return 1
+        }
+
+        if depth >= maxDepth {
+            return 1 + directoryEnumerationCount(url, includeHidden: includeHidden)
+        }
+
+        var options: FileManager.DirectoryEnumerationOptions = [.skipsPackageDescendants]
+        if !includeHidden {
+            options.insert(.skipsHiddenFiles)
+        }
+        let childURLs = (try? fileManager.contentsOfDirectory(
+            at: url,
+            includingPropertiesForKeys: [.isDirectoryKey, .isSymbolicLinkKey],
+            options: options
+        )) ?? []
+
+        return 1 + childURLs.reduce(0) { partial, childURL in
+            partial + countScanWorkUnits(
+                childURL,
+                depth: depth + 1,
+                maxDepth: maxDepth,
+                includeHidden: includeHidden
+            )
+        }
+    }
+
+    private func directoryEnumerationCount(_ url: URL, includeHidden: Bool) -> Int {
+        var options: FileManager.DirectoryEnumerationOptions = [.skipsPackageDescendants]
+        if !includeHidden {
+            options.insert(.skipsHiddenFiles)
+        }
+        guard let enumerator = fileManager.enumerator(
+            at: url,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: options
+        ) else {
+            return 0
+        }
+
+        var count = 0
+        for case _ as URL in enumerator {
+            count += 1
+        }
+        return count
+    }
+}
+
+private struct StorageScanContext {
+    let startedAt: Date
+    let progress: ((StorageScanProgress) -> Void)?
+    var processedItemCount = 0
+    private var lastEmitTimestamp: TimeInterval = 0
+
+    init(startedAt: Date, progress: ((StorageScanProgress) -> Void)?) {
+        self.startedAt = startedAt
+        self.progress = progress
+    }
+
+    mutating func recordScanned(_ url: URL, totalItemCount: Int) {
+        processedItemCount += 1
+        emit(
+            phase: .scanning,
+            processedItemCount: processedItemCount,
+            totalItemCount: totalItemCount,
+            currentPath: url.path
+        )
+    }
+
+    mutating func emit(
+        phase: StorageScanProgressPhase,
+        processedItemCount: Int,
+        totalItemCount: Int?,
+        currentPath: String?,
+        force: Bool = false,
+        elapsedSeconds explicitElapsedSeconds: TimeInterval? = nil
+    ) {
+        guard let progress else {
+            return
+        }
+
+        let now = Date()
+        let elapsedSeconds = explicitElapsedSeconds ?? now.timeIntervalSince(startedAt)
+        guard force || elapsedSeconds - lastEmitTimestamp >= 0.12 else {
+            return
+        }
+        lastEmitTimestamp = elapsedSeconds
+        progress(
+            StorageScanProgress(
+                phase: phase,
+                processedItemCount: processedItemCount,
+                totalItemCount: totalItemCount,
+                currentPath: currentPath,
+                elapsedSeconds: elapsedSeconds
+            )
+        )
     }
 }

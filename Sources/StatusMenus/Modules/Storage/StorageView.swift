@@ -5,6 +5,7 @@ import SwiftUI
 struct StorageView: View {
     @State private var analysis = StorageAnalysis.empty
     @State private var isScanning = false
+    @State private var scanProgress: StorageScanProgress?
     @State private var rootPath = FileManager.default.homeDirectoryForCurrentUser.path
     @State private var scanMode: StorageScanMode = .balanced
     @State private var showAdvanced = false
@@ -12,6 +13,8 @@ struct StorageView: View {
     @State private var selectedNode: StorageNode?
     @State private var selectedCandidateIDs: Set<String> = []
     @State private var cleanupMessage: String?
+    @State private var indexMessage: String?
+    @State private var hasLoadedLocalIndex = false
 
     private let panelStroke = Color.secondary.opacity(0.18)
 
@@ -29,6 +32,9 @@ struct StorageView: View {
                 rankedPaths
             }
             .padding(24)
+        }
+        .task {
+            await loadLatestStorageIndexIfNeeded()
         }
     }
 
@@ -68,6 +74,8 @@ struct StorageView: View {
                     .lineLimit(1)
             }
 
+            scanStatus
+
             DisclosureGroup(isExpanded: $showAdvanced) {
                 Stepper("Custom scan reach \(customDepth)", value: $customDepth, in: 1...8)
                     .font(.callout)
@@ -83,9 +91,11 @@ struct StorageView: View {
 
     private var operationsDeck: some View {
         VStack(spacing: 14) {
-            HStack(spacing: 12) {
+            LazyVGrid(columns: metricColumns, alignment: .leading, spacing: 12) {
                 technicalMetric("Used", StatusFormatters.bytes(analysis.disk.used), symbolName: "chart.pie", color: .blue)
                 technicalMetric("Tree Size", StatusFormatters.bytes(analysis.root.byteCount), symbolName: "point.3.connected.trianglepath.dotted", color: .cyan)
+                technicalMetric("Progress", scanProgressMetricLabel, symbolName: "percent", color: .indigo)
+                technicalMetric("Scan Time", scanTimeMetricLabel, symbolName: "timer", color: .purple)
                 technicalMetric("Indexed", "\(analysis.indexedFileCount)", symbolName: "number", color: .green)
                 technicalMetric("Clean Plan", StatusFormatters.bytes(selectedCleanupBytes), symbolName: "trash", color: .orange)
             }
@@ -211,6 +221,12 @@ struct StorageView: View {
                 }
                 if analysis.scanLog.isEmpty {
                     Text("Ready to analyze \(rootDisplayPath).")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                }
+                if let indexMessage {
+                    Text(indexMessage)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .lineLimit(2)
@@ -402,6 +418,104 @@ struct StorageView: View {
         showAdvanced ? customDepth : scanMode.maxDepth
     }
 
+    private var metricColumns: [GridItem] {
+        [GridItem(.adaptive(minimum: 128), spacing: 12)]
+    }
+
+    @ViewBuilder
+    private var scanStatus: some View {
+        if isScanning, let scanProgress {
+            VStack(alignment: .leading, spacing: 7) {
+                HStack(spacing: 10) {
+                    if let percent = scanProgress.percentComplete {
+                        ProgressView(value: percent)
+                            .frame(maxWidth: 260)
+                    } else {
+                        ProgressView()
+                            .controlSize(.small)
+                    }
+                    Text(scanProgressHeadline)
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(.primary)
+                    Text("Time \(StatusFormatters.duration(scanProgress.elapsedSeconds))")
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                }
+                if let currentPath = scanProgress.currentPath {
+                    Text(currentPath.replacingOccurrences(of: FileManager.default.homeDirectoryForCurrentUser.path, with: "~"))
+                        .font(.caption2.monospaced())
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+            }
+            .padding(10)
+            .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        } else if analysis.scanFinishedAt != nil || indexMessage != nil {
+            HStack(spacing: 8) {
+                SymbolIcon(symbolName: "checkmark.circle", size: 14)
+                    .foregroundStyle(.green)
+                Text(scanCompleteSummary)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Spacer()
+            }
+            .padding(9)
+            .background(Color.secondary.opacity(0.06), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        }
+    }
+
+    private var scanProgressHeadline: String {
+        guard let scanProgress else {
+            return "Ready"
+        }
+        switch scanProgress.phase {
+        case .preparing:
+            return "Counting scan work"
+        case .scanning:
+            if let percent = scanProgress.percentComplete {
+                return "Scanning \(StatusFormatters.wholePercent(percent))"
+            }
+            return "Scanning"
+        case .indexing:
+            return "Writing local index"
+        case .finished:
+            return "Scan complete"
+        }
+    }
+
+    private var scanCompleteSummary: String {
+        let finished = StatusFormatters.shortDateTime(analysis.scanFinishedAt)
+        let duration = StatusFormatters.duration(analysis.scanDuration)
+        if let indexMessage {
+            return "\(indexMessage) · Last scan \(finished) · \(duration)"
+        }
+        return "Last scan \(finished) · \(duration)"
+    }
+
+    private var scanProgressMetricLabel: String {
+        if isScanning, let percent = scanProgress?.percentComplete {
+            return StatusFormatters.wholePercent(percent)
+        }
+        if analysis.scanFinishedAt != nil {
+            return "100%"
+        }
+        return "--"
+    }
+
+    private var scanTimeMetricLabel: String {
+        if isScanning, let elapsedSeconds = scanProgress?.elapsedSeconds {
+            return StatusFormatters.duration(elapsedSeconds)
+        }
+        guard analysis.scanFinishedAt != nil else {
+            return "--"
+        }
+        return StatusFormatters.duration(analysis.scanDuration)
+    }
+
     private func technicalMetric(_ title: String, _ value: String, symbolName: String, color: Color) -> some View {
         HStack(spacing: 10) {
             SymbolIcon(symbolName: symbolName, size: 20)
@@ -453,18 +567,64 @@ struct StorageView: View {
         }
 
         isScanning = true
+        scanProgress = StorageScanProgress(
+            phase: .preparing,
+            processedItemCount: 0,
+            totalItemCount: nil,
+            currentPath: rootPath,
+            elapsedSeconds: 0
+        )
+        indexMessage = nil
         if clearCleanupMessage {
             cleanupMessage = nil
         }
         let url = URL(fileURLWithPath: NSString(string: rootPath).expandingTildeInPath)
         let depth = effectiveScanDepth
+        let progressHandler: @Sendable (StorageScanProgress) -> Void = { progress in
+            Task { @MainActor in
+                scanProgress = progress
+            }
+        }
         Task {
-            let nextAnalysis = await Task.detached(priority: .utility) {
-                StorageService().analysis(rootURL: url, maxDepth: depth, includeHidden: false, includeDiskCapacity: true)
+            let result = await Task.detached(priority: .utility) { () -> (StorageAnalysis, String?) in
+                let nextAnalysis = StorageService().analysis(
+                    rootURL: url,
+                    maxDepth: depth,
+                    includeHidden: false,
+                    includeDiskCapacity: true,
+                    progress: progressHandler
+                )
+                progressHandler(
+                    StorageScanProgress(
+                        phase: .indexing,
+                        processedItemCount: 0,
+                        totalItemCount: nil,
+                        currentPath: StorageIndexStore.defaultDatabaseURL.path,
+                        elapsedSeconds: nextAnalysis.scanDuration
+                    )
+                )
+                do {
+                    try StorageIndexStore().save(nextAnalysis)
+                    progressHandler(
+                        StorageScanProgress(
+                            phase: .finished,
+                            processedItemCount: 1,
+                            totalItemCount: 1,
+                            currentPath: nextAnalysis.root.url.path,
+                            elapsedSeconds: nextAnalysis.scanDuration
+                        )
+                    )
+                    return (nextAnalysis, nil)
+                } catch {
+                    return (nextAnalysis, error.localizedDescription)
+                }
             }.value
-            analysis = nextAnalysis
-            selectedNode = nextAnalysis.rankedNodes.first
-            selectedCandidateIDs = Set(nextAnalysis.cleanupCandidates.filter { $0.risk == .safe }.map(\.id))
+            applyAnalysis(result.0, updateRootPath: true)
+            if let indexError = result.1 {
+                indexMessage = "Scan complete, but local index was not saved: \(indexError)"
+            } else {
+                indexMessage = "Saved local index at \(StatusFormatters.shortDateTime(result.0.scanFinishedAt))"
+            }
             isScanning = false
         }
     }
@@ -485,6 +645,33 @@ struct StorageView: View {
             isScanning = false
             scan(clearCleanupMessage: false)
         }
+    }
+
+    @MainActor
+    private func loadLatestStorageIndexIfNeeded() async {
+        guard !hasLoadedLocalIndex else {
+            return
+        }
+        hasLoadedLocalIndex = true
+
+        let restoredAnalysis = await Task.detached(priority: .utility) {
+            try? StorageIndexStore().latestAnalysis()
+        }.value
+        guard let restoredAnalysis, analysis == .empty, !isScanning else {
+            return
+        }
+
+        applyAnalysis(restoredAnalysis, updateRootPath: true)
+        indexMessage = "Loaded local index from \(StatusFormatters.shortDateTime(restoredAnalysis.scanFinishedAt))"
+    }
+
+    private func applyAnalysis(_ nextAnalysis: StorageAnalysis, updateRootPath: Bool) {
+        analysis = nextAnalysis
+        if updateRootPath {
+            rootPath = nextAnalysis.root.url.path
+        }
+        selectedNode = nextAnalysis.rankedNodes.first
+        selectedCandidateIDs = Set(nextAnalysis.cleanupCandidates.filter { $0.risk == .safe }.map(\.id))
     }
 
     private func revealSelectedCleanup() {

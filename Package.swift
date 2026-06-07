@@ -12,7 +12,12 @@ let package = Package(
         .library(name: "StatusMenusCore", targets: ["StatusMenusCore"])
     ],
     targets: [
-        .target(name: "StatusMenusCore"),
+        .target(
+            name: "StatusMenusCore",
+            linkerSettings: [
+                .linkedLibrary("sqlite3")
+            ]
+        ),
         .executableTarget(
             name: "StatusMenus",
             dependencies: ["StatusMenusCore"]

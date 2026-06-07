@@ -97,10 +97,50 @@ enum AgentDockCLI {
         switch subcommand {
         case "scan":
             let analysis = service.analysis(rootURL: root, maxDepth: depth, includeHidden: rest.contains("--hidden"))
+            let indexResult = saveStorageIndexIfNeeded(analysis, arguments: rest)
             if rest.contains("--json") {
-                try printJSON(analysisDictionary(analysis))
+                var payload = analysisDictionary(analysis)
+                payload["localIndex"] = indexResultDictionary(indexResult)
+                try printJSON(payload)
             } else {
                 print("Scanned \(analysis.root.url.path)")
+                print("Indexed files: \(analysis.indexedFileCount)")
+                print("Used in tree: \(StatusFormatters.bytes(analysis.root.byteCount))")
+                print("Cleanup candidates: \(analysis.cleanupCandidates.count)")
+                print("Scan time: \(StatusFormatters.duration(analysis.scanDuration))")
+                switch indexResult {
+                case .saved(let databaseURL):
+                    print("Local index: saved to \(databaseURL.path)")
+                case .skipped:
+                    print("Local index: skipped")
+                case .failed(let message):
+                    print("Local index: failed - \(message)")
+                }
+            }
+        case "index":
+            let databasePath = StorageIndexStore.defaultDatabaseURL.path
+            let analysis = try StorageIndexStore().latestAnalysis()
+            guard let analysis else {
+                if rest.contains("--json") {
+                    try printJSON([
+                        "available": false,
+                        "databasePath": databasePath
+                    ])
+                } else {
+                    print("No local storage index found at \(databasePath)")
+                }
+                return
+            }
+            if rest.contains("--json") {
+                var payload = analysisDictionary(analysis)
+                payload["available"] = true
+                payload["databasePath"] = databasePath
+                try printJSON(payload)
+            } else {
+                print("Local index: \(databasePath)")
+                print("Root: \(analysis.root.url.path)")
+                print("Last scan: \(StatusFormatters.shortDateTime(analysis.scanFinishedAt))")
+                print("Scan time: \(StatusFormatters.duration(analysis.scanDuration))")
                 print("Indexed files: \(analysis.indexedFileCount)")
                 print("Used in tree: \(StatusFormatters.bytes(analysis.root.byteCount))")
                 print("Cleanup candidates: \(analysis.cleanupCandidates.count)")
@@ -142,6 +182,20 @@ enum AgentDockCLI {
             }
         default:
             throw CLIError.message("unknown storage subcommand \(subcommand)")
+        }
+    }
+
+    private static func saveStorageIndexIfNeeded(_ analysis: StorageAnalysis, arguments: [String]) -> StorageIndexResult {
+        if arguments.contains("--no-index") {
+            return .skipped
+        }
+
+        do {
+            let store = try StorageIndexStore()
+            try store.save(analysis)
+            return .saved(store.databaseURL)
+        } catch {
+            return .failed(error.localizedDescription)
         }
     }
 
@@ -309,11 +363,43 @@ enum AgentDockCLI {
     private static func analysisDictionary(_ analysis: StorageAnalysis) -> [String: Any] {
         [
             "root": nodeDictionary(analysis.root),
+            "disk": [
+                "usedBytes": analysis.disk.used,
+                "availableBytes": analysis.disk.available,
+                "capacityBytes": analysis.disk.capacity
+            ],
             "indexedFileCount": analysis.indexedFileCount,
+            "scanStartedAt": dateDictionaryValue(analysis.scanStartedAt),
+            "scanFinishedAt": dateDictionaryValue(analysis.scanFinishedAt),
+            "scanDurationSeconds": analysis.scanDuration,
             "rankedNodes": analysis.rankedNodes.map(nodeDictionary),
             "cleanupCandidates": analysis.cleanupCandidates.map(candidateDictionary),
             "scanLog": analysis.scanLog
         ]
+    }
+
+    private static func indexResultDictionary(_ result: StorageIndexResult) -> [String: Any] {
+        switch result {
+        case .saved(let databaseURL):
+            return [
+                "saved": true,
+                "databasePath": databaseURL.path
+            ]
+        case .skipped:
+            return [
+                "saved": false,
+                "skipped": true
+            ]
+        case .failed(let message):
+            return [
+                "saved": false,
+                "error": message
+            ]
+        }
+    }
+
+    private static func dateDictionaryValue(_ date: Date?) -> Any {
+        date?.timeIntervalSince1970 ?? NSNull()
     }
 
     private static func nodeDictionary(_ node: StorageNode) -> [String: Any] {
@@ -377,7 +463,8 @@ enum AgentDockCLI {
 
     Usage:
       agentdock status [--json] [--root ~/.slock]
-      agentdock storage scan [--path ~] [--depth 3] [--hidden] [--json]
+      agentdock storage scan [--path ~] [--depth 3] [--hidden] [--no-index] [--json]
+      agentdock storage index [--json]
       agentdock storage top [--path ~] [--depth 3] [--limit 20] [--json]
       agentdock storage clean-plan [--path ~] [--depth 3] [--safe-only] [--json]
       agentdock storage trash <path> [--json]
@@ -399,4 +486,10 @@ private enum CLIError: Error, CustomStringConvertible {
             return message
         }
     }
+}
+
+private enum StorageIndexResult {
+    case saved(URL)
+    case skipped
+    case failed(String)
 }

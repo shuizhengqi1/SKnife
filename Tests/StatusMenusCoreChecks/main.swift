@@ -32,7 +32,9 @@ enum StatusMenusCoreChecks {
         try run("percent formatting handles zero total", percentFormattingHandlesZeroTotal)
         try run("storage summary skips recursive folder sizes", storageSummarySnapshotSkipsRecursiveFolderSizes)
         try run("storage scan modes hide raw depth behind presets", storageScanModesHideRawDepthBehindPresets)
+        try run("storage analysis reports progress and duration", storageAnalysisReportsProgressAndDuration)
         try run("storage analysis builds ranked tree and cleanup candidates", storageAnalysisBuildsRankedTreeAndCleanupCandidates)
+        try run("storage index store persists latest analysis", storageIndexStorePersistsLatestAnalysis)
         try run("Slock metric sample summarizes snapshot and caps history", slockMetricSampleSummarizesSnapshotAndCapsHistory)
         try run("storage placeholder skips disk capacity", storagePlaceholderSkipsDiskCapacity)
         try run("storage empty snapshot has no work", storageEmptySnapshotHasNoWork)
@@ -352,6 +354,33 @@ enum StatusMenusCoreChecks {
         try expect(!StorageScanMode.balanced.subtitle.lowercased().contains("depth"), "preset subtitle should not expose raw depth")
     }
 
+    private static func storageAnalysisReportsProgressAndDuration() throws {
+        let root = try makeTemporaryDirectory()
+        try FileManager.default.createDirectory(at: root.appendingPathComponent("Downloads"), withIntermediateDirectories: true)
+        try writeBytes(128_000, to: root.appendingPathComponent("Downloads/a.bin"))
+        try writeBytes(64_000, to: root.appendingPathComponent("Downloads/b.bin"))
+
+        var progressEvents: [StorageScanProgress] = []
+        let analysis = StorageService().analysis(
+            rootURL: root,
+            maxDepth: 3,
+            includeHidden: true,
+            includeDiskCapacity: false
+        ) { progress in
+            progressEvents.append(progress)
+        }
+
+        try expect(analysis.scanDuration >= 0, "analysis should record scan duration")
+        try expect(analysis.scanStartedAt != nil, "analysis should record scan start time")
+        try expect(analysis.scanFinishedAt != nil, "analysis should record scan finish time")
+        try expect(progressEvents.contains { $0.phase == .preparing }, "progress should report preparation")
+        try expect(progressEvents.contains { $0.phase == .scanning && $0.totalItemCount != nil }, "progress should report bounded scan percentage")
+        try expect(progressEvents.last?.phase == .finished, "last progress event should finish")
+        try expect(progressEvents.last?.percentComplete == 1, "finished progress should be 100 percent")
+        try expect(progressEvents.last?.elapsedSeconds ?? -1 >= 0, "progress should include elapsed scan time")
+        try expect(analysis.scanLog.contains { $0.contains("Scan time") }, "scan log should include scan time")
+    }
+
     private static func storageAnalysisBuildsRankedTreeAndCleanupCandidates() throws {
         let root = try makeTemporaryDirectory()
         let derivedData = root.appendingPathComponent("Library/Developer/Xcode/DerivedData/project-a")
@@ -383,6 +412,36 @@ enum StatusMenusCoreChecks {
         try expect(analysis.cleanupCandidates.contains { $0.url.path.contains("Downloads") && $0.risk == .review }, "Downloads should require review")
         try expect(!analysis.cleanupCandidates.contains { $0.url.path.contains("Documents") }, "Documents should not be a cleanup candidate")
         try expect(analysis.scanLog.contains { $0.contains("Indexed 4 files") }, "scan log should include indexed file count")
+    }
+
+    private static func storageIndexStorePersistsLatestAnalysis() throws {
+        let root = try makeTemporaryDirectory()
+        let databaseURL = root.appendingPathComponent("storage-index.sqlite")
+        let scanRoot = root.appendingPathComponent("scan-root")
+        let caches = scanRoot.appendingPathComponent("Library/Caches/com.example.cache")
+        let documents = scanRoot.appendingPathComponent("Documents")
+        try FileManager.default.createDirectory(at: caches, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: documents, withIntermediateDirectories: true)
+        try writeBytes(300_000, to: caches.appendingPathComponent("blob.cache"))
+        try writeBytes(100_000, to: documents.appendingPathComponent("notes.txt"))
+
+        let analysis = StorageService().analysis(
+            rootURL: scanRoot,
+            maxDepth: 5,
+            includeHidden: true,
+            includeDiskCapacity: false
+        )
+
+        let store = try StorageIndexStore(databaseURL: databaseURL)
+        try store.save(analysis)
+
+        let restored = try expectUnwrapped(try store.latestAnalysis(), "latest analysis should be restored from local db")
+        try expect(restored.root.url.standardizedFileURL == scanRoot.standardizedFileURL, "restored root should match scanned root")
+        try expect(restored.indexedFileCount == analysis.indexedFileCount, "restored index should keep file count")
+        try expect(restored.root.byteCount == analysis.root.byteCount, "restored root should keep byte count")
+        try expect(restored.rankedNodes.contains { $0.url.path.contains("Library/Caches") }, "restored index should keep ranked nodes")
+        try expect(restored.cleanupCandidates.contains { $0.url.path.contains("Library/Caches") && $0.risk == .safe }, "restored index should keep cleanup candidates")
+        try expect(restored.scanDuration == analysis.scanDuration, "restored index should keep scan duration")
     }
 
     private static func slockMetricSampleSummarizesSnapshotAndCapsHistory() throws {

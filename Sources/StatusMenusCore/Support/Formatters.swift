@@ -25,6 +25,19 @@ public enum StatusFormatters {
         return formatter.string(from: NSNumber(value: fraction)) ?? "0%"
     }
 
+    public static func duration(_ seconds: TimeInterval) -> String {
+        let clampedSeconds = max(0, seconds)
+        if clampedSeconds < 1 {
+            return "\(Int((clampedSeconds * 1_000).rounded())) ms"
+        }
+        if clampedSeconds < 60 {
+            return String(format: "%.1f s", clampedSeconds)
+        }
+        let minutes = Int(clampedSeconds / 60)
+        let remainder = Int(clampedSeconds.rounded()) % 60
+        return "\(minutes)m \(remainder)s"
+    }
+
     public static func shortDateTime(_ date: Date?) -> String {
         guard let date else {
             return "Never"
